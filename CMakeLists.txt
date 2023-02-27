@@ -22,12 +22,9 @@ add_executable(dp_clusterer ${DP_CLUSTERER_SRC})
 set(NORMALISE_INDELS_SRC normalise.cpp)
 add_executable(normalise ${NORMALISE_INDELS_SRC})
 
-add_executable(bug bug.c)
-
 find_library(HTS_LIB hts PATHS htslib-1.17/lib NO_DEFAULT_PATH)
 target_link_libraries(reads_categorizer "${HTS_LIB}")
 target_link_libraries(clip_consensus_builder "${HTS_LIB}")
 target_link_libraries(merge_identical_calls "${HTS_LIB}")
 target_link_libraries(dp_clusterer "${HTS_LIB}")
 target_link_libraries(normalise "${HTS_LIB}")
-target_link_libraries(bug "${HTS_LIB}")
