@@ -627,15 +627,6 @@ void calculate_confidence_interval_size(std::string contig_name, std::vector<dou
 										std::vector<uint32_t>& median_crossing_count_geqi_by_isize,
 										std::vector<deletion_t*>& deletions, open_samFile_t* bam_file, config_t config, stats_t stats) {
 
-	bam1_t* read_ = bam_init1();
-	char* R[] = { "chr7:106092666-106093543" }; // , "chr7:106092835-106093712" };
-	hts_itr_t* iter_ = sam_itr_regarray(bam_file->idx, bam_file->header, R, 1);
-//	hts_itr_t* iter_ = sam_itr_querys(bam_file->idx, bam_file->header, "chr7:106092666-106093543");
-	while (sam_itr_next(bam_file->file, iter_, read_) >= 0) {
-		std::cout << read_->core.pos << std::endl;
-	}
-	return;
-
     std::sort(deletions.begin(), deletions.end(), [](const deletion_t* d1, const deletion_t* d2) {
         return (d1->start+d1->end)/2 < (d2->start+d2->end)/2;
     });
@@ -660,7 +651,6 @@ void calculate_confidence_interval_size(std::string contig_name, std::vector<dou
     	char* region = new char[1000];
     	strcpy(region, ss.str().c_str());
 		regions.push_back(region);
-    	std::cout << region << std::endl;
     }
 
 	int curr_pos = 0;
@@ -668,12 +658,8 @@ void calculate_confidence_interval_size(std::string contig_name, std::vector<dou
     bam1_t* read = bam_init1();
     std::vector<std::vector<double> > local_dists(deletions.size());
     while (sam_itr_next(bam_file->file, iter, read) >= 0) {
-    	std::cout << read->core.pos << std::endl;
-//    	if (read->core.pos >= 106092836 && read->core.pos <= 106094587) {
-//    		std::cout << bam_get_qname(read) << std::endl;
-//    	}
 
-        if (is_unmapped(read) || is_mate_unmapped(read) || !is_primary(read) || read->core.qual < 20) continue;
+    	if (is_unmapped(read) || is_mate_unmapped(read) || !is_primary(read) || read->core.qual < 20) continue;
         if (!is_samechr(read) || is_samestr(read) || bam_is_rev(read) || read->core.isize <= 0) continue;
 
         while (curr_pos < deletions.size() && midpoints[curr_pos] < read->core.pos) curr_pos++;

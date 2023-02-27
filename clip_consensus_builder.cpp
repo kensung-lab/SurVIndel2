@@ -916,9 +916,8 @@ int main(int argc, char* argv[]) {
     std::vector<std::future<void> > futures;
     for (size_t contig_id = 0; contig_id < contig_map.size(); contig_id++) {
         std::string contig_name = contig_map.get_name(contig_id);
-        if (contig_name != "chr7") continue;
-//        std::future<void> future = thread_pool.push(build_consensuses, contig_id, contig_name);
-//        futures.push_back(std::move(future));
+        std::future<void> future = thread_pool.push(build_consensuses, contig_id, contig_name);
+        futures.push_back(std::move(future));
     }
     thread_pool.stop(true);
     for (size_t i = 0; i < futures.size(); i++) {
@@ -952,7 +951,6 @@ int main(int argc, char* argv[]) {
     ctpl::thread_pool thread_pool2(config.threads);
     for (size_t contig_id = 0; contig_id < contig_map.size(); contig_id++) {
         std::string contig_name = contig_map.get_name(contig_id);
-        if (contig_name != "chr7") continue;
         std::future<void> future = thread_pool2.push(size_and_depth_filtering, contig_name);
         futures.push_back(std::move(future));
     }
