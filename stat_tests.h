@@ -21,7 +21,6 @@ struct read_w_cached_info_t {
     bool left_clipped, right_clipped, is_rev, is_mrev;
     int references = 0;
 
-    read_w_cached_info_t() {}
     read_w_cached_info_t(bam1_t* read) : read(bam_dup1(read)), as(get_AS_tag(read)), start(read->core.pos), end(bam_endpos(read)),
                                          aln_len(get_aligned_portion_len(read)), left_clipped(is_left_clipped(read, 0)),
                                          right_clipped(is_right_clipped(read, 0)), is_rev(bam_is_rev(read)), is_mrev(bam_is_mrev(read)),
@@ -223,6 +222,7 @@ void compute_cleaned_up_depth(duplication_t* dup, open_samFile_t* bam_file,
     dup->med_right_flanking_cov = dup->right_flanking_cov = right_flanking_coverage[end/2];
 
     int ow_pairs = 0;
+
     for (read_w_cached_info_t* r : ldup_reads) {
         hts_pos_t mate_end = r->start + r->isize;
         if (r->start >= dup->original_start && r->end-dup->original_start <= config.max_is && r->is_rev && !r->is_mrev

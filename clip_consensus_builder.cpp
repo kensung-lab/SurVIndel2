@@ -720,8 +720,8 @@ void build_clip_consensuses(int id, int contig_id, std::string contig_name, std:
     std::vector<char*> regions;
     auto indel_to_region = [&contig_name](const indel_t* indel) {
         std::stringstream ss;
-        ss << contig_name << ":" << std::max(hts_pos_t(0), indel->sr_remap_info->remapped_bp-config.read_len) << "-";
-        ss << indel->sr_remap_info->remapped_bp+config.read_len;
+        ss << contig_name << ":" << std::max(hts_pos_t(1), indel->sr_remap_info->remapped_bp-config.read_len) << "-";
+        ss << std::min(indel->sr_remap_info->remapped_bp+config.read_len, hts_pos_t(chr_seqs.get_len(contig_name)-1));
         char* region = new char[1000];
         strcpy(region, ss.str().c_str());
         return region;
@@ -740,7 +740,6 @@ void build_clip_consensuses(int id, int contig_id, std::string contig_name, std:
     }
 
     if (!regions.empty()) {
-
     iter = sam_itr_regarray(bam_file->idx, bam_file->header, regions.data(), regions.size());
     read = bam_init1();
 

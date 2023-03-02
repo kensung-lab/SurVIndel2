@@ -123,7 +123,8 @@ struct duplication_t : indel_t {
 
     duplication_t(hts_pos_t start, hts_pos_t end, hts_pos_t rc_anchor_start, hts_pos_t lc_anchor_end, consensus_t* lc_consensus,
                   consensus_t* rc_consensus, std::string source) :
-                  indel_t(std::max(start, hts_pos_t(0)), end, rc_anchor_start, lc_anchor_end, source, lc_consensus, rc_consensus) {}
+                	  original_start(start), original_end(end),
+					  indel_t(std::max(start, hts_pos_t(0)), end, rc_anchor_start, lc_anchor_end, source, lc_consensus, rc_consensus) {}
     // Normally we store/report the base BEFORE the event, as per VCF specifications.
     // We handle here the exception where the duplication starts at the first base of the contig (base before 0 is -1, but it is not valid,
     // so we still store 0)
