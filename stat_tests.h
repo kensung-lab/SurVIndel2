@@ -527,6 +527,10 @@ void depth_filter_indel(std::string contig_name, std::vector<indel_t*>& indels, 
         while (curr_pos < indels.size() && indels[curr_pos]->end + FLANKING_SIZE < rs) {
         	set_median_cov(indels[curr_pos], flanking_left_cov_by_base[curr_pos], indel_left_cov_by_base[curr_pos],
         			indel_right_cov_by_base[curr_pos], flanking_right_cov_by_base[curr_pos]);
+			std::vector<uint32_t>().swap(flanking_left_cov_by_base[curr_pos]);
+			std::vector<uint32_t>().swap(indel_left_cov_by_base[curr_pos]);
+			std::vector<uint32_t>().swap(indel_right_cov_by_base[curr_pos]);
+			std::vector<uint32_t>().swap(flanking_right_cov_by_base[curr_pos]);
         	curr_pos++;
         }
 
