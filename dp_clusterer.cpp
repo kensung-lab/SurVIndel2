@@ -10,6 +10,7 @@
 #include "sam_utils.h"
 #include "stat_tests.h"
 #include "remapping.h"
+#include "libs/kdtree.h"
 
 std::string workdir;
 std::mutex mtx;
@@ -41,6 +42,7 @@ struct cluster_t {
 	bool used = false;
 	cluster_type_enum type;
 	std::string rightmost_lseq, leftmost_rseq; // right-most right-facing sequence and left-most left-facing seq
+	std::vector<std::string> reads;
 
 	cluster_t() : la_start(0), la_end(0), ra_start(0), ra_end(0), max_mapq(0) {}
 	cluster_t(bam1_t* read) : la_start(read->core.pos), la_end(bam_endpos(read)), ra_start(read->core.mpos), ra_end(get_mate_endpos(read)),
@@ -75,6 +77,8 @@ cluster_t* merge(cluster_t* c1, cluster_t* c2) {
 	merged->count = c1->count + c2->count;
 	merged->max_mapq = std::max(c1->max_mapq, c2->max_mapq);
 	merged->type = c1->type;
+	merged->reads.insert(merged->reads.end(), c1->reads.begin(), c1->reads.end());
+	merged->reads.insert(merged->reads.end(), c2->reads.begin(), c2->reads.end());
 
 	// set rightmost_lseq
 	if (c1->la_end > c2->la_end) merged->rightmost_lseq = c1->rightmost_lseq;
@@ -139,6 +143,13 @@ void cluster_clusters(std::vector<cluster_t*>& clusters) {
 		}
 	}
 
+	kdtree* kd_tree_endpoints = kd_create(2);
+	for (int i = 0; i < clusters.size(); i++) {
+		if (clusters[i]->used) continue;
+		double p[2] = {double(clusters[i]->la_end), double(clusters[i]->ra_end)};
+		kd_insert(kd_tree_endpoints, p, clusters[i]);
+	}
+
 	while (!pq.empty()) {
 		cc_pair ccp = pq.top();
 		pq.pop();
@@ -147,13 +158,28 @@ void cluster_clusters(std::vector<cluster_t*>& clusters) {
 		ccp.c1->used = ccp.c2->used = true;
 
 		cluster_t* merged = merge(ccp.c1, ccp.c2);
-		for (int i = 0; i < clusters.size(); i++) {
-			if (clusters[i]->used) continue;
-			cc_pair ccp = cc_pair(clusters[i], merged);
-			if (ccp.dist <= config.max_is) pq.push(ccp);
+		double ps[2] = {double(merged->la_start), double(merged->ra_start)};
+		kdres* res = kd_nearest_range(kd_tree_endpoints, ps, 2*config.max_is);
+		while (!kd_res_end(res)) {
+			cluster_t* c = (cluster_t*) kd_res_item_data(res);
+			if (!c->used) {
+				cc_pair ccp = cc_pair(merged, c);
+				if (ccp.compatible()) pq.push(ccp);
+			}
+			kd_res_next(res);
 		}
+		kd_res_free(res);
+
+		double pe[2] = {double(merged->la_end), double(merged->ra_end)};
+		kd_insert(kd_tree_endpoints, pe, merged);
+		// for (int i = 0; i < clusters.size(); i++) {
+		// 	if (clusters[i]->used) continue;
+		// 	cc_pair ccp = cc_pair(clusters[i], merged);
+		// 	if (ccp.dist <= config.max_is) pq.push(ccp);
+		// }
 		clusters.push_back(merged);
 	}
+	kd_free(kd_tree_endpoints);
 
 	std::sort(clusters.begin(), clusters.end());
 }
@@ -168,6 +194,7 @@ void cluster_dps(int id, int contig_id, std::string contig_name) {
 	bam1_t* read = bam_init1();
 	while (sam_itr_next(dp_bam_file->file, iter, read) >= 0) {
 		cluster_t* cluster = new cluster_t(read);
+		cluster->reads.push_back(bam_get_qname(read));
 		if (cluster->type == LONG_PAIR) {
 			lp_clusters.push_back(cluster);
 		} else {

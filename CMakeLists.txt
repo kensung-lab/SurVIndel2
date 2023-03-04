@@ -16,7 +16,7 @@ add_executable(clip_consensus_builder ${CLIP_CONSENSUS_BUILDER_SRC})
 set(MERGE_IDENTICAL_CALLS merge_identical_calls.cpp)
 add_executable(merge_identical_calls ${MERGE_IDENTICAL_CALLS})
 
-set(DP_CLUSTERER_SRC libs/ssw.c libs/ssw_cpp.cpp dp_clusterer.cpp)
+set(DP_CLUSTERER_SRC libs/ssw.c libs/ssw_cpp.cpp libs/kdtree.c dp_clusterer.cpp)
 add_executable(dp_clusterer ${DP_CLUSTERER_SRC})
 
 set(NORMALISE_INDELS_SRC normalise.cpp)
