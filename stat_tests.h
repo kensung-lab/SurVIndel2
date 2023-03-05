@@ -509,8 +509,8 @@ void depth_filter_indel(std::string contig_name, std::vector<indel_t*>& indels, 
         return indel1->start < indel2->start;
     });
 
-    std::vector<uint32_t> flanking_left_cov(indels.size()), del_left_cov(indels.size());
-    std::vector<uint32_t> del_right_cov(indels.size()), flanking_right_cov(indels.size());
+    std::vector<uint32_t> flanking_left_cov(indels.size()), indel_left_cov(indels.size());
+    std::vector<uint32_t> indel_right_cov(indels.size()), flanking_right_cov(indels.size());
 
 	std::vector<std::vector<uint32_t> > flanking_left_cov_by_base(indels.size(), std::vector<uint32_t>(1,0)), indel_left_cov_by_base(indels.size(), std::vector<uint32_t>(1,0));
 	std::vector<std::vector<uint32_t> > indel_right_cov_by_base(indels.size(), std::vector<uint32_t>(1,0)), flanking_right_cov_by_base(indels.size(), std::vector<uint32_t>(1,0));
@@ -536,7 +536,8 @@ void depth_filter_indel(std::string contig_name, std::vector<indel_t*>& indels, 
 
         if (curr_pos == indels.size()) break;
 
-        for (int i = curr_pos; i < indels.size() && indels[i]->start - FLANKING_SIZE < re; i++) {
+        hts_pos_t re_plus_fs = re + FLANKING_SIZE;
+        for (int i = curr_pos; i < indels.size() && indels[i]->start < re_plus_fs; i++) { // ==> indels[i]->start - FLANKING_REGION < re
             indel_t* indel = indels[i];
 			hts_pos_t indel_tested_len = std::min(indel->end-indel->start, hts_pos_t(INDEL_TESTED_REGION_SIZE));
 
@@ -549,12 +550,6 @@ void depth_filter_indel(std::string contig_name, std::vector<indel_t*>& indels, 
 				right_cluster_cov_by_base[i] = std::vector<uint32_t>(config.max_is+1);
 			}
 
-			hts_pos_t left_flanking_start = std::max(hts_pos_t(0), indel->start-FLANKING_SIZE);
-			hts_pos_t left_flanking_len = indel->start - left_flanking_start;
-			hts_pos_t indel_lcov_start = indel->start;
-			hts_pos_t indel_rcov_start = std::max(indel->start, indel->end-INDEL_TESTED_REGION_SIZE);
-			hts_pos_t right_flanking_start = indel->end;
-
 			hts_pos_t b = std::max(hts_pos_t(0), rs-indel->rc_anchor_start), e = std::min(re-indel->rc_anchor_start, indel->start-indel->rc_anchor_start);
 			for (hts_pos_t j = b; j < e; j++) {
 				left_cluster_cov_by_base[i][j]++;
@@ -566,30 +561,35 @@ void depth_filter_indel(std::string contig_name, std::vector<indel_t*>& indels, 
 
 			if (read->core.qual < 20) continue;
 
+			hts_pos_t left_flanking_start = std::max(hts_pos_t(0), indel->start-FLANKING_SIZE);
+			hts_pos_t left_flanking_len = indel->start - left_flanking_start;
+			hts_pos_t indel_lcov_start = indel->start;
+			hts_pos_t indel_rcov_start = std::max(indel->start, indel->end-INDEL_TESTED_REGION_SIZE);
+			hts_pos_t right_flanking_start = indel->end;
+
 			b = std::max(hts_pos_t(0), rs-left_flanking_start), e = std::min(left_flanking_len, re-left_flanking_start);
 			for (hts_pos_t j = b; j < e; j++) {
 				flanking_left_cov_by_base[i][j]++;
 			}
+			if (e > b) flanking_left_cov[i] += e-b;
 
 			b = std::max(hts_pos_t(0), rs-indel_lcov_start), e = std::min(indel_tested_len, re-indel_lcov_start);
 			for (hts_pos_t j = b; j < e; j++) {
 				indel_left_cov_by_base[i][j]++;
 			}
+			if (e > b) indel_left_cov[i] += e-b;
 
 			b = std::max(hts_pos_t(0), rs-indel_rcov_start), e = std::min(indel_tested_len, re-indel_rcov_start);
 			for (hts_pos_t j = b; j < e; j++) {
 				indel_right_cov_by_base[i][j]++;
 			}
+			if (e > b) indel_right_cov[i] += e-b;
 
 			b = std::max(hts_pos_t(0), rs-right_flanking_start), e = std::min(hts_pos_t(FLANKING_SIZE), re-right_flanking_start);
 			for (hts_pos_t j = b; j < e; j++) {
 				flanking_right_cov_by_base[i][j]++;
 			}
-
-            flanking_left_cov[i] += overlap(indel->start - FLANKING_SIZE, indel->start, rs, re);
-            del_left_cov[i] += overlap(indel->start, std::min(indel->start + INDEL_TESTED_REGION_SIZE, indel->end), rs, re);
-            del_right_cov[i] += overlap(std::max(indel->end - INDEL_TESTED_REGION_SIZE, indel->start), indel->end, rs, re);
-            flanking_right_cov[i] += overlap(indel->end, indel->end + FLANKING_SIZE, rs, re);
+			if (e > b) flanking_right_cov[i] += e-b;
         }
     }
 
@@ -603,8 +603,8 @@ void depth_filter_indel(std::string contig_name, std::vector<indel_t*>& indels, 
 		hts_pos_t indel_tested_len = std::min(indel->end-indel->start, hts_pos_t(INDEL_TESTED_REGION_SIZE));
 
 		indel->left_flanking_cov = flanking_left_cov[i] / FLANKING_SIZE;
-        indel->indel_left_cov = del_left_cov[i] / indel_tested_len;
-        indel->indel_right_cov = del_right_cov[i] / indel_tested_len;
+        indel->indel_left_cov = indel_left_cov[i] / indel_tested_len;
+        indel->indel_right_cov = indel_right_cov[i] / indel_tested_len;
         indel->right_flanking_cov = flanking_right_cov[i] / FLANKING_SIZE;
 
 

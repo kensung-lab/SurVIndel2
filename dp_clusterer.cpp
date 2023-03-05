@@ -172,11 +172,6 @@ void cluster_clusters(std::vector<cluster_t*>& clusters) {
 
 		double pe[2] = {double(merged->la_end), double(merged->ra_end)};
 		kd_insert(kd_tree_endpoints, pe, merged);
-		// for (int i = 0; i < clusters.size(); i++) {
-		// 	if (clusters[i]->used) continue;
-		// 	cc_pair ccp = cc_pair(clusters[i], merged);
-		// 	if (ccp.dist <= config.max_is) pq.push(ccp);
-		// }
 		clusters.push_back(merged);
 	}
 	kd_free(kd_tree_endpoints);
