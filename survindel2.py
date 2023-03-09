@@ -28,6 +28,7 @@ cmd_parser.add_argument('--samplename', default='', help='Name of the sample to 
 cmd_parser.add_argument('--sampling-regions', help='File in BED format containing a list of regions to be used to estimate'
                                                    'statistics such as depth.')
 cmd_parser.add_argument('--match_score', type=int, default=1, help='Match score used by the aligner that produced tha BAM/CRAM file (TODO: auto-determine).')
+cmd_parser.add_argument('--version', action='version', version="SurVIndel2 v%s" % VERSION, help='Print version number.')
 cmd_args = cmd_parser.parse_args()
 
 
