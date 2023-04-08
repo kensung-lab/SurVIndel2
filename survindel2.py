@@ -27,7 +27,10 @@ cmd_parser.add_argument('--samplename', default='', help='Name of the sample to 
                                                                  'up until the first \'.\'')
 cmd_parser.add_argument('--sampling-regions', help='File in BED format containing a list of regions to be used to estimate'
                                                    'statistics such as depth.')
+cmd_parser.add_argument('--log', action='store_true', help='Activate in-depth logging (can be very large and cryptic).')
 cmd_parser.add_argument('--match_score', type=int, default=1, help='Match score used by the aligner that produced tha BAM/CRAM file (TODO: auto-determine).')
+cmd_parser.add_argument('--min-diff-hsr', type=int, default=3, help='Minimum number of differences with the reference \
+                        (considered as number of insertions, deletions and mismatches) for a read to be considered a hidden split read.')
 cmd_parser.add_argument('--version', action='version', version="SurVIndel2 v%s" % VERSION, help='Print version number.')
 cmd_args = cmd_parser.parse_args()
 
@@ -48,6 +51,8 @@ config_file.write("max_seq_error %s\n" % cmd_args.max_seq_error)
 config_file.write("match_score %s\n" % cmd_args.match_score)
 config_file.write("max_clipped_pos_dist %s\n" % cmd_args.max_clipped_pos_dist)
 config_file.write("min_size_for_depth_filtering %s\n" % cmd_args.min_size_for_depth_filtering)
+config_file.write("min_diff_hsr %s\n" % cmd_args.min_diff_hsr)
+config_file.write("log %d\n" % cmd_args.log)
 if cmd_args.sampling_regions:
     config_file.write("sampling_regions %s\n" % cmd_args.sampling_regions)
 config_file.write("version %s\n" % VERSION)

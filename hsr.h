@@ -241,7 +241,7 @@ void filter_well_aligned_to_ref(char* contig_seq, hts_pos_t contig_len, std::vec
         aligner.Align(padded_consensus.c_str(), contig_seq+ref_start+1, ref_end-ref_start, filter, &aln, 0);
         int differences = std::count(aln.cigar_string.begin(), aln.cigar_string.end(), 'D') +
                           std::count(aln.cigar_string.begin(), aln.cigar_string.end(), 'I') + aln.mismatches - 2*config.clip_penalty;
-        if ((aln.sw_score < padded_consensus.length()*2 && differences >= 3) || is_clipped(aln)) {
+        if ((aln.sw_score < padded_consensus.length()*2 && differences >= config.min_diff_hsr) || is_clipped(aln)) {
             retained.push_back(c);
         } else {
         	delete c;

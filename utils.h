@@ -144,7 +144,9 @@ struct config_t {
     double max_seq_error;
     int max_clipped_pos_dist;
     int min_size_for_depth_filtering;
+    int min_diff_hsr;
     std::string sampling_regions, version;
+    bool log;
 
     int clip_penalty = 7;
     int min_score_diff = 15;
@@ -169,8 +171,10 @@ struct config_t {
         max_seq_error = std::stod(config_params["max_seq_error"]);
         max_clipped_pos_dist = std::stoi(config_params["max_clipped_pos_dist"]);
         min_size_for_depth_filtering = std::stoi(config_params["min_size_for_depth_filtering"]);
+        min_diff_hsr = std::stoi(config_params["min_diff_hsr"]);
         sampling_regions = config_params["sampling_regions"];
         version = config_params["version"];
+        log = std::stoi(config_params["log"]);
     }
 
     std::string clip_penalty_padding() { return std::string(this->clip_penalty, 'N'); }

@@ -252,8 +252,6 @@ void build_hsr_consensuses(int id, int contig_id, std::string contig_name, std::
         std::vector<consensus_t*>& consensuses = lc_clipped ? lc_hsr_consensuses : rc_hsr_consensuses;
 
         if (cluster.size() >= 3 && bam_endpos(cluster.front())-read->core.pos < read->core.l_qseq/2) {
-            // only use HSRs for repeat regions
-            // note the tolerance of 50 bp for imprecisions in TRF annotations
 			std::vector<bam_redux_t*> cluster_v;
 			for (bam1_t* r : cluster) cluster_v.push_back(new bam_redux_t(r));
 			consensus_t* consensus = build_full_consensus(contig_id, cluster_v, lc_clipped);
@@ -271,7 +269,7 @@ void build_hsr_consensuses(int id, int contig_id, std::string contig_name, std::
         cluster.push_back(bam_dup1(read));
     }
     if (rc_cluster.size() >= 3) {
-        	std::vector<bam_redux_t*> cluster_v;
+		std::vector<bam_redux_t*> cluster_v;
 		for (bam1_t* r : rc_cluster) cluster_v.push_back(new bam_redux_t(r));
 		consensus_t* consensus = build_full_consensus(contig_id, cluster_v, false);
 		if (consensus != NULL) {
@@ -633,7 +631,22 @@ void build_clip_consensuses(int id, int contig_id, std::string contig_name, std:
     // TODO: remove this logging when not needed anymore
 	for (consensus_t* consensus : rc_consensuses) {
 		log_mtx.lock();
-		flog << consensus->name() << " " << consensus->consensus << " " << consensus->breakpoint << " " << consensus->remap_boundary << std::endl;
+		flog << consensus->name() << " RC " << consensus->consensus << " " << consensus->breakpoint << " " << consensus->remap_boundary << std::endl;
+		log_mtx.unlock();
+	}
+	for (consensus_t* consensus : lc_consensuses) {
+		log_mtx.lock();
+		flog << consensus->name() << " LC " << consensus->consensus << " " << consensus->breakpoint << " " << consensus->remap_boundary << std::endl;
+		log_mtx.unlock();
+	}
+	for (consensus_t* consensus : rc_hsr_consensuses) {
+		log_mtx.lock();
+		flog << consensus->name() << " HSR_RC " << consensus->consensus << " " << consensus->breakpoint << " " << consensus->remap_boundary << std::endl;
+		log_mtx.unlock();
+	}
+	for (consensus_t* consensus : lc_hsr_consensuses) {
+		log_mtx.lock();
+		flog << consensus->name() << " HSR_LC " << consensus->consensus << " " << consensus->breakpoint << " " << consensus->remap_boundary << std::endl;
 		log_mtx.unlock();
 	}
 
@@ -826,13 +839,13 @@ void build_clip_consensuses(int id, int contig_id, std::string contig_name, std:
     release_bam_reader(bam_file);
 
     auto rm_small_indels = [](indel_t* indel) { return indel->len() < config.min_sv_size; };
+    contig_deletions.erase(std::remove_if(contig_deletions.begin(), contig_deletions.end(), rm_small_indels), contig_deletions.end());
+    contig_duplications.erase(std::remove_if(contig_duplications.begin(), contig_duplications.end(), rm_small_indels), contig_duplications.end());
     del_out_mtx.lock();
 	deletions.insert(deletions.end(), contig_deletions.begin(), contig_deletions.end());
-    deletions.erase(std::remove_if(deletions.begin(), deletions.end(), rm_small_indels), deletions.end());
 	del_out_mtx.unlock();
 	dup_out_mtx.lock();
 	duplications.insert(duplications.end(), contig_duplications.begin(), contig_duplications.end());
-    duplications.erase(std::remove_if(duplications.begin(), duplications.end(), rm_small_indels), duplications.end());
 	dup_out_mtx.unlock();
 }
 
@@ -908,8 +921,8 @@ int main(int argc, char* argv[]) {
 
     chr_seqs.read_fasta_into_map(reference_fname);
 
-//    flog.open(workdir + "/log");
-    flog.open("/dev/null");
+    if (config.log) flog.open(workdir + "/log");
+    else flog.open("/dev/null");
 
     ctpl::thread_pool thread_pool(config.threads);
     std::vector<std::future<void> > futures;

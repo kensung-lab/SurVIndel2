@@ -21,7 +21,7 @@ uint32_t* isize_counts;
 std::vector<std::vector<uint32_t> > isizes_count_geq_i;
 
 bool is_hidden_split_read(bam1_t* r) {
-	if (is_left_clipped(r, 0) || is_right_clipped(r, 0)) return false;
+	if (is_left_clipped(r, config.min_clip_len) || is_right_clipped(r, config.min_clip_len)) return false;
 
     int mismatches = bam_aux2i(bam_aux_get(r, "NM"));
 
@@ -35,7 +35,7 @@ bool is_hidden_split_read(bam1_t* r) {
         }
     }
 
-    return (mismatches + indels >= 3);
+    return (mismatches + indels >= config.min_diff_hsr);
 }
 
 void categorize(int id, std::string bam_fname, int contig_id, std::string contig_name, std::vector<int> rnd_positions) {
