@@ -37,6 +37,12 @@ indel_t* remap_consensus(std::string& consensus_seq, char* reference, hts_pos_t 
 
 	std::string padded_consensus = config.clip_penalty_padding() + consensus_seq + config.clip_penalty_padding();
 
+	StripedSmithWaterman::Filter filter;
+	StripedSmithWaterman::Alignment lh_full_aln, rh_full_aln;
+	aligner.Align(padded_consensus.c_str(), reference+ref_lh_start, ref_lh_len, filter, &lh_full_aln, 0);
+	aligner.Align(padded_consensus.c_str(), reference+ref_rh_start, ref_rh_len, filter, &rh_full_aln, 0);
+	StripedSmithWaterman::Alignment& best_aln = lh_full_aln.sw_score >= rh_full_aln.sw_score ? lh_full_aln : rh_full_aln;
+
 	char ref_lh_cstr[100000];
 	for (int i = 0; i < ref_lh_len; i++) {
 		ref_lh_cstr[i] = toupper(reference[ref_lh_start+i]);
@@ -62,7 +68,6 @@ indel_t* remap_consensus(std::string& consensus_seq, char* reference, hts_pos_t 
 	delete[] prefix_scores;
 	delete[] suffix_scores;
 
-	StripedSmithWaterman::Filter filter;
 	char* padded_consensus_cstr = new char[padded_consensus.length()+1];
 	strcpy(padded_consensus_cstr, padded_consensus.c_str());
 	char terminator = '\0';
@@ -73,10 +78,6 @@ indel_t* remap_consensus(std::string& consensus_seq, char* reference, hts_pos_t 
 
 	std::vector<StripedSmithWaterman::Alignment> rh_alns = get_best_alns(reference+ref_rh_start, ref_rh_len, padded_consensus_cstr+config.clip_penalty+split_i, aligner);
 	delete[] padded_consensus_cstr;
-
-	StripedSmithWaterman::Alignment lh_full_aln, rh_full_aln;
-	aligner.Align(padded_consensus.c_str(), reference+ref_lh_start, ref_lh_len, filter, &lh_full_aln, 0);
-	aligner.Align(padded_consensus.c_str(), reference+ref_rh_start, ref_rh_len, filter, &rh_full_aln, 0);
 
 	StripedSmithWaterman::Alignment lh_aln, rh_aln;
 	int min_size = INT32_MAX;
@@ -100,7 +101,9 @@ indel_t* remap_consensus(std::string& consensus_seq, char* reference, hts_pos_t 
 		ins_seq += padded_consensus.substr(config.clip_penalty+split_i, rh_aln.query_begin);
 		indel = new deletion_t(start, end, la_start, ra_end, lc_consensus, rc_consensus, lh_aln.sw_score, rh_aln.sw_score, source, ins_seq);
 	} else {
-		indel = new duplication_t(end, start, la_start, ra_end, lc_consensus, rc_consensus, source);
+		std::string ins_seq = padded_consensus.substr(config.clip_penalty+split_i, get_left_clip_size(rh_aln));
+		if (ins_seq.length() > start-end) return NULL;
+		indel = new duplication_t(end, start, la_start, ra_end, lc_consensus, rc_consensus, source, ins_seq);
 	}
 	indel->full_junction_score = std::max(lh_full_aln.sw_score, rh_full_aln.sw_score);
 	indel->split_junction_score = lh_aln.sw_score + rh_aln.sw_score;
@@ -111,7 +114,6 @@ indel_t* remap_consensus(std::string& consensus_seq, char* reference, hts_pos_t 
 		lc_consensus->clip_len = split_i;
 	}
 
-	StripedSmithWaterman::Alignment& best_aln = lh_full_aln.sw_score >= rh_full_aln.sw_score ? lh_full_aln : rh_full_aln;
 	indel->extra_info += lh_aln.cigar_string + "," + rh_aln.cigar_string + "," + best_aln.cigar_string + ",";
 	return indel;
 }

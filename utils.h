@@ -73,13 +73,14 @@ struct indel_t {
     int overlap = 0, mismatches = 0;
     bool remapped = false;
     std::string rightmost_rightfacing_seq, leftmost_leftfacing_seq;
+    std::string ins_seq;
 
     sr_remap_info_t* sr_remap_info = NULL;
 
     indel_t(hts_pos_t start, hts_pos_t end, hts_pos_t rc_anchor_start, hts_pos_t lc_anchor_end, std::string source,
-            consensus_t* lc_consensus, consensus_t* rc_consensus)
+            consensus_t* lc_consensus, consensus_t* rc_consensus, std::string ins_seq)
     : start(start), end(end), rc_anchor_start(rc_anchor_start), lc_anchor_end(lc_anchor_end),
-	  source(source), lc_consensus(lc_consensus), rc_consensus(rc_consensus) { }
+	  source(source), lc_consensus(lc_consensus), rc_consensus(rc_consensus), ins_seq(ins_seq) { }
 
     virtual hts_pos_t len() { return end-start; }
     virtual std::string indel_type() { return ""; };
@@ -99,7 +100,6 @@ struct deletion_t : indel_t {
     int max_conf_size = SIZE_NOT_COMPUTED, estimated_size = SIZE_NOT_COMPUTED, conc_pairs = 0;
     double ks_pval = -1.0;
     hts_pos_t remap_boundary_lower = REMAP_LB_NOT_COMPUTED, remap_boundary_upper = REMAP_UB_NOT_COMPUTED;
-    std::string ins_seq;
     int l_cluster_region_disc_pairs = 0, r_cluster_region_disc_pairs = 0;
 
     std::string original_range;
@@ -107,8 +107,7 @@ struct deletion_t : indel_t {
 
     deletion_t(hts_pos_t start, hts_pos_t end, hts_pos_t rc_anchor_start, hts_pos_t lc_anchor_end, consensus_t* lc_consensus,
                consensus_t* rc_consensus, int lh_score, int rh_score, std::string source, std::string ins_seq) :
-            indel_t(start, end, rc_anchor_start, lc_anchor_end, source, lc_consensus, rc_consensus), lh_score(lh_score), rh_score(rh_score),
-			ins_seq(ins_seq) {};
+            indel_t(start, end, rc_anchor_start, lc_anchor_end, source, lc_consensus, rc_consensus, ins_seq), lh_score(lh_score), rh_score(rh_score) {};
 
     hts_pos_t len() override { return end-start-ins_seq.length(); }
 
@@ -122,14 +121,16 @@ struct duplication_t : indel_t {
     int lc_cluster_region_disc_pairs = 0, rc_cluster_region_disc_pairs = 0;
 
     duplication_t(hts_pos_t start, hts_pos_t end, hts_pos_t rc_anchor_start, hts_pos_t lc_anchor_end, consensus_t* lc_consensus,
-                  consensus_t* rc_consensus, std::string source) :
+                  consensus_t* rc_consensus, std::string source, std::string ins_seq) :
                 	  original_start(start), original_end(end),
-					  indel_t(std::max(start, hts_pos_t(0)), end, rc_anchor_start, lc_anchor_end, source, lc_consensus, rc_consensus) {}
+					  indel_t(std::max(start, hts_pos_t(0)), end, rc_anchor_start, lc_anchor_end, source, lc_consensus, rc_consensus, ins_seq) {}
     // Normally we store/report the base BEFORE the event, as per VCF specifications.
     // We handle here the exception where the duplication starts at the first base of the contig (base before 0 is -1, but it is not valid,
     // so we still store 0)
 
     std::string indel_type() override { return "DUP"; }
+
+    hts_pos_t len() override { return ins_seq.length() + (end-start); }
 };
 
 
@@ -411,6 +412,37 @@ suffix_prefix_aln_t aln_suffix_prefix(std::string& s1, std::string& s2, int matc
     return suffix_prefix_aln_t(overlap, best_score, best_aln_mismatches);
 }
 
+suffix_prefix_aln_t aln_suffix_prefix_perfect(std::string& s1, std::string& s2, int min_overlap = 1) {
+    int best_overlap = 0, overlap = 0;
+
+    const char* _s1 = s1.c_str(),* _s2 = s2.c_str();
+    int _s1_len = s1.length(), _s2_len = s2.length();
+
+    int max_overlap = std::min(s1.length(), s2.length());
+    for (int i = max_overlap; i >= min_overlap; i--) {
+    	if (strncmp(_s1+(_s1_len-i), _s2, i) == 0) {
+			return suffix_prefix_aln_t(i, i, 0);
+    	}
+    }
+    return suffix_prefix_aln_t(0, 0, 0);
+}
+
+bool is_homopolymer(const char* seq, int len) {
+	int a = 0, c = 0, g = 0, t = 0;
+	for (int i = 0; i < len; i++) {
+		char b = std::toupper(seq[i]);
+		if (b == 'A') a++;
+		else if (b == 'C') c++;
+		else if (b == 'G') g++;
+		else if (b == 'T') t++;
+	}
+	return max(a, c, g, t)/double(a+c+g+t) >= 0.8;
+}
+
+bool is_homopolymer(std::string seq) {
+	return is_homopolymer(seq.data(), seq.length());
+}
+
 template<typename T>
 T mean(std::vector<T>& v) {
     return std::accumulate(v.begin(), v.end(), (T)0.0)/v.size();
@@ -576,8 +608,8 @@ bcf_hdr_t* generate_vcf_header(chr_seqs_map_t& contigs, std::string& sample_name
 	bcf_hdr_add_hrec(header, bcf_hdr_parse_line(header, og_range_tag, &len));
 
 //	// TODO: this is "debugging" information, remove when done
-//	const char* extrainfo_tag = "##INFO=<ID=EXTRA_INFO,Number=.,Type=String,Description=\"Extra information.\">";
-//	bcf_hdr_add_hrec(header, bcf_hdr_parse_line(header, extrainfo_tag, &len));
+	const char* extrainfo_tag = "##INFO=<ID=EXTRA_INFO,Number=.,Type=String,Description=\"Extra information.\">";
+	bcf_hdr_add_hrec(header, bcf_hdr_parse_line(header, extrainfo_tag, &len));
 
 	// add FORMAT tags
 	const char* gt_tag = "##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">";
@@ -713,7 +745,7 @@ void dup2bcf(bcf_hdr_t* hdr, bcf1_t* bcf_entry, char* chr_seq, std::string& cont
 
 	int_conv = dup->end+1;
 	bcf_update_info_int32(hdr, bcf_entry, "END", &int_conv, 1);
-	int_conv = dup->end - dup->start;
+	int_conv = dup->len();
 	bcf_update_info_int32(hdr, bcf_entry, "SVLEN", &int_conv, 1);
 	bcf_update_info_string(hdr, bcf_entry, "SVTYPE", "DUP");
 	int depths[] = {dup->left_flanking_cov, dup->indel_left_cov, dup->indel_right_cov, dup->right_flanking_cov};
@@ -731,6 +763,9 @@ void dup2bcf(bcf_hdr_t* hdr, bcf1_t* bcf_entry, char* chr_seq, std::string& cont
 	bcf_update_info_int32(hdr, bcf_entry, "SPLIT_JUNCTION_SCORE", &dup->split_junction_score, 1);
 	bcf_update_info_string(hdr, bcf_entry, "SOURCE", dup->source.c_str());
 
+	if (!dup->ins_seq.empty()) {
+		bcf_update_info_string(hdr, bcf_entry, "SVINSSEQ", dup->ins_seq.c_str());
+	}
 	bcf_update_info_string(hdr, bcf_entry, "EXTRA_INFO", dup->extra_info.c_str());
 
 	// add GT info
@@ -816,11 +851,18 @@ inline bool has_Ns(char* ref, hts_pos_t start, hts_pos_t len) {
 	return memchr(ref+start, 'N', len) != NULL;
 }
 
+int get_left_clip_size(StripedSmithWaterman::Alignment& aln) {
+	return cigar_int_to_op(aln.cigar[0]) == 'S' ? cigar_int_to_len(aln.cigar[0]) : 0;
+}
+int get_right_clip_size(StripedSmithWaterman::Alignment& aln) {
+	return cigar_int_to_op(aln.cigar[aln.cigar.size()-1]) == 'S' ? cigar_int_to_len(aln.cigar[aln.cigar.size()-1]) : 0;
+}
+
 bool is_left_clipped(StripedSmithWaterman::Alignment& aln, int min_clip_len = 0) {
-	return cigar_int_to_op(aln.cigar[0]) == 'S' && cigar_int_to_len(aln.cigar[0]) >= min_clip_len;
+	return get_left_clip_size(aln) >= min_clip_len;
 }
 bool is_right_clipped(StripedSmithWaterman::Alignment& aln, int min_clip_len = 0) {
-	return cigar_int_to_op(aln.cigar[aln.cigar.size()-1]) == 'S' && cigar_int_to_len(aln.cigar[aln.cigar.size()-1]) >= min_clip_len;
+	return get_right_clip_size(aln) >= min_clip_len;
 }
 bool is_clipped(StripedSmithWaterman::Alignment& aln, int min_clip_len = 0) {
 	return is_left_clipped(aln, min_clip_len) || is_right_clipped(aln, min_clip_len);

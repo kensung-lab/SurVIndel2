@@ -213,7 +213,7 @@ consensus_t* build_full_consensus(int contig_id, std::vector<bam_redux_t*>& clip
          || (!left_clipped && r->left_clip_size < config.min_clip_len)) {
 			supp_clipped_reads++;
 			max_mapq = std::max(max_mapq, r->mapq);
-            read_qnames += r->qname + "," + std::to_string(old_and_new_scores[i].first) + "," + std::to_string(old_and_new_scores[i].second) + ",";
+            read_qnames += r->qname + "," + std::to_string(r->is_rev()) + "," + std::to_string(old_and_new_scores[i].first) + "," + std::to_string(old_and_new_scores[i].second) + ",";
         }
         i++;
     }

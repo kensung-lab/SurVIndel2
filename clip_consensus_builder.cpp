@@ -394,7 +394,7 @@ void find_indels_from_rc_lc_pairs(std::string contig_name, std::vector<consensus
 		indel->extra_info += std::to_string(indel->rc_anchor_start) + "," + std::to_string(indel->lc_anchor_end);
 		if (indel->indel_type() == "DEL") {
 			contig_deletions.push_back((deletion_t*) indel);
-		} else {
+		} else if (indel->indel_type() == "DUP") {
 			contig_duplications.push_back((duplication_t*) indel);
 		}
 	}

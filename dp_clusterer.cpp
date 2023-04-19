@@ -228,7 +228,7 @@ void cluster_dps(int id, int contig_id, std::string contig_name) {
 		if (c->used || c->count < min_cluster_size || c->max_mapq != 60) continue;
 
 		if (c->la_end > c->ra_start) {
-			duplication_t* dup = new duplication_t(c->ra_start, c->la_end, c->la_start, c->ra_end, NULL, NULL, "DP");
+			duplication_t* dup = new duplication_t(c->ra_start, c->la_end, c->la_start, c->ra_end, NULL, NULL, "DP", "");
 			set_indel_info(dup, c);
 			duplications.push_back(dup);
 		}

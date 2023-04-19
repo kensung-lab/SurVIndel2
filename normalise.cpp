@@ -7,37 +7,6 @@
 chr_seqs_map_t chr_seqs;
 bcf_hdr_t* hdr;
 
-std::string get_sv_type(bcf1_t* sv) {
-    char* data = NULL;
-    int len = 0;
-    if (bcf_get_info_string(hdr, sv, "SVTYPE", &data, &len) < 0) {
-        throw std::runtime_error("Failed to determine SVTYPE for sv " + std::string(sv->d.id));
-    }
-    std::string svtype = data;
-    delete[] data;
-    return svtype;
-}
-
-int get_sv_end(bcf1_t* sv) {
-    int* data = NULL;
-    int size = 0;
-    bcf_get_info_int32(hdr, sv, "END", &data, &size);
-    if (size > 0) {
-        int end = data[0];
-        delete[] data;
-        return end-1; // return 0-based
-    }
-
-    bcf_get_info_int32(hdr, sv, "SVLEN", &data, &size);
-    if (size > 0) {
-        int svlen = data[0];
-        delete[] data;
-        return sv->pos + abs(svlen);
-    }
-
-    throw std::runtime_error("SV " + std::string(sv->d.id) + "has no END or SVLEN annotation.");
-}
-
 std::string get_ins_seq(bcf1_t* sv) {
 	// priority to the ALT allele, if it is not symbolic and longer than just the padding base
 	char c = toupper(sv->d.allele[1][0]);
@@ -57,7 +26,7 @@ std::string get_ins_seq(bcf1_t* sv) {
 void normalise_del(bcf1_t* vcf_record) {
 
 	char* chr_seq = chr_seqs.get_seq(bcf_hdr_id2name(hdr, vcf_record->rid));
-	int end = get_sv_end(vcf_record);
+	int end = get_sv_end(hdr, vcf_record);
 
 	// try to shorten deletion if ins_seq
 	std::string ins_seq = get_ins_seq(vcf_record);
@@ -98,8 +67,11 @@ void normalise_del(bcf1_t* vcf_record) {
 
 void normalise_dup(bcf1_t* vcf_record) {
 
+	std::string ins_seq = get_ins_seq(vcf_record);
+	if (!ins_seq.empty()) return;
+
 	char* chr_seq = chr_seqs.get_seq(bcf_hdr_id2name(hdr, vcf_record->rid));
-	int end = get_sv_end(vcf_record);
+	int end = get_sv_end(hdr, vcf_record);
 
 	int i = 0;
 	while (vcf_record->pos > 0 && chr_seq[vcf_record->pos] == chr_seq[end]) {
@@ -113,7 +85,7 @@ void normalise_dup(bcf1_t* vcf_record) {
 }
 
 void normalise(bcf1_t* vcf_record) {
-	std::string svtype = get_sv_type(vcf_record);
+	std::string svtype = get_sv_type(hdr, vcf_record);
 	if (svtype == "DEL") {
 		normalise_del(vcf_record);
 	} else if (svtype == "DUP") {
