@@ -27,6 +27,7 @@ struct consensus_t {
     size_t supp_clipped_reads;
     uint8_t max_mapq;
     hts_pos_t remap_boundary;
+    int left_ext_reads = 0, right_ext_reads = 0, hq_left_ext_reads = 0, hq_right_ext_reads = 0;
     bool is_hsr = false;
 
     static const int LOWER_BOUNDARY_NON_CALCULATED = 0, UPPER_BOUNDARY_NON_CALCULATED = INT32_MAX;
@@ -137,7 +138,7 @@ struct duplication_t : indel_t {
 struct config_t {
 
     int threads, seed;
-    int max_is; // find a way to move this to stats_t
+    int min_is, max_is; // find a way to move this to stats_t
     int min_sv_size;
     int match_score;
     int read_len; // this is not exactly "config", but it is more convenient to place it here
@@ -164,6 +165,7 @@ struct config_t {
 
         threads = std::stoi(config_params["threads"]);
         seed = std::stoi(config_params["seed"]);
+        min_is = std::stoi(config_params["min_is"]);
         max_is = std::stoi(config_params["max_is"]);
         min_sv_size = std::stoi(config_params["min_sv_size"]);
         match_score = std::stoi(config_params["match_score"]);
@@ -507,6 +509,9 @@ bcf_hdr_t* generate_vcf_header(chr_seqs_map_t& contigs, std::string& sample_name
 	const char* weak_support_flt_tag = "##FILTER=<ID=WEAK_SUPPORT,Description=\"Remapped breakpoint has low support from local reads.\">";
 	bcf_hdr_add_hrec(header, bcf_hdr_parse_line(header, weak_support_flt_tag, &len));
 
+	const char* failed_to_ext_flt_tag = "##FILTER=<ID=FAILED_TO_EXTEND,Description=\"No reads can extend the consensus.\">";
+	bcf_hdr_add_hrec(header, bcf_hdr_parse_line(header, failed_to_ext_flt_tag, &len));
+
 	const char* low_ptn_ratio_flt_tag = "##FILTER=<ID=LOW_PTN_RATIO,Description=\"Low positive-to-negative ratio.\">";
 	bcf_hdr_add_hrec(header, bcf_hdr_parse_line(header, low_ptn_ratio_flt_tag, &len));
 
@@ -578,6 +583,12 @@ bcf_hdr_t* generate_vcf_header(chr_seqs_map_t& contigs, std::string& sample_name
 
 	const char* perfect_support_reads_tag = "##INFO=<ID=PERFECT_SUPPORTING_1SR_READS,Number=1,Type=Integer,Description=\"Reads perfectly supporting the 1SR remapping.\">";
 	bcf_hdr_add_hrec(header, bcf_hdr_parse_line(header, perfect_support_reads_tag, &len));
+
+	const char* ext_1sr_reads_tag = "##INFO=<ID=EXT_1SR_READS,Number=2,Type=Integer,Description=\"Reads extending a 1SR consensus to the left and to the right.\">";
+	bcf_hdr_add_hrec(header, bcf_hdr_parse_line(header, ext_1sr_reads_tag, &len));
+
+	const char* hq_ext_1sr_reads_tag = "##INFO=<ID=HQ_EXT_1SR_READS,Number=2,Type=Integer,Description=\"Reads with high MAPQ extending a 1SR consensus to the left and to the right.\">";
+	bcf_hdr_add_hrec(header, bcf_hdr_parse_line(header, hq_ext_1sr_reads_tag, &len));
 
 	const char* mmrate_pairs_tag = "##INFO=<ID=MM_RATE,Number=1,Type=Float,Description=\"Mismatch rate in consensus overlap.\">";
 	bcf_hdr_add_hrec(header, bcf_hdr_parse_line(header, mmrate_pairs_tag, &len));
@@ -703,6 +714,17 @@ void del2bcf(bcf_hdr_t* hdr, bcf1_t* bcf_entry, char* chr_seq, std::string& cont
 		bcf_update_info_int32(hdr, bcf_entry, "WEAK_SUPPORTING_1SR_READS", &del->sr_remap_info->weak_supporting_reads, 1);
 		bcf_update_info_int32(hdr, bcf_entry, "STRONG_SUPPORTING_1SR_READS", &del->sr_remap_info->strong_supporting_reads, 1);
 		bcf_update_info_int32(hdr, bcf_entry, "PERFECT_SUPPORTING_1SR_READS", &del->sr_remap_info->perfect_supporting_reads, 1);
+		if (del->lc_consensus) {
+			int ext_1sr_reads[] = { del->lc_consensus->left_ext_reads, del->lc_consensus->right_ext_reads };
+			bcf_update_info_int32(hdr, bcf_entry, "EXT_1SR_READS", ext_1sr_reads, 2);
+			int hq_ext_1sr_reads[] = { del->lc_consensus->hq_left_ext_reads, del->lc_consensus->hq_right_ext_reads };
+			bcf_update_info_int32(hdr, bcf_entry, "HQ_EXT_1SR_READS", hq_ext_1sr_reads, 2);
+		} else if (del->rc_consensus) {
+			int ext_1sr_reads[] = { del->rc_consensus->left_ext_reads, del->rc_consensus->right_ext_reads };
+			bcf_update_info_int32(hdr, bcf_entry, "EXT_1SR_READS", ext_1sr_reads, 2);
+			int hq_ext_1sr_reads[] = { del->rc_consensus->hq_left_ext_reads, del->rc_consensus->hq_right_ext_reads };
+			bcf_update_info_int32(hdr, bcf_entry, "HQ_EXT_1SR_READS", hq_ext_1sr_reads, 2);
+		}
 	}
 	bcf_update_info_int32(hdr, bcf_entry, "FULL_JUNCTION_SCORE", &del->full_junction_score, 1);
 	bcf_update_info_int32(hdr, bcf_entry, "SPLIT_JUNCTION_SCORE", &del->split_junction_score, 1);
@@ -731,7 +753,12 @@ void dup2bcf(bcf_hdr_t* hdr, bcf1_t* bcf_entry, char* chr_seq, std::string& cont
 	bcf_entry->rid = bcf_hdr_name2id(hdr, contig_name.c_str());
 	bcf_entry->pos = dup->start;
 	bcf_update_id(hdr, bcf_entry, dup->id.c_str());
-	std::string alleles = std::string(1, chr_seq[dup->start]) + ",<DUP>";
+	std::string alleles = std::string(1, chr_seq[dup->start]);
+	if (dup->start == dup->end) {
+		alleles += ",<INS>";
+	} else {
+		alleles += ",<DUP>";
+	}
 	bcf_update_alleles_str(hdr, bcf_entry, alleles.c_str());
 
 	// add filters
@@ -747,7 +774,11 @@ void dup2bcf(bcf_hdr_t* hdr, bcf1_t* bcf_entry, char* chr_seq, std::string& cont
 	bcf_update_info_int32(hdr, bcf_entry, "END", &int_conv, 1);
 	int_conv = dup->len();
 	bcf_update_info_int32(hdr, bcf_entry, "SVLEN", &int_conv, 1);
-	bcf_update_info_string(hdr, bcf_entry, "SVTYPE", "DUP");
+	if (dup->start == dup->end) {
+		bcf_update_info_string(hdr, bcf_entry, "SVTYPE", "INS");
+	} else {
+		bcf_update_info_string(hdr, bcf_entry, "SVTYPE", "DUP");
+	}
 	int depths[] = {dup->left_flanking_cov, dup->indel_left_cov, dup->indel_right_cov, dup->right_flanking_cov};
 	bcf_update_info_int32(hdr, bcf_entry, "DEPTHS", depths, 4);
 	int median_depths[] = {dup->med_left_flanking_cov, dup->med_indel_left_cov, dup->med_indel_right_cov, dup->med_right_flanking_cov};
@@ -759,6 +790,17 @@ void dup2bcf(bcf_hdr_t* hdr, bcf1_t* bcf_entry, char* chr_seq, std::string& cont
 	bcf_update_info_int32(hdr, bcf_entry, "CLIPPED_READS", clipped_reads, 2);
 	int max_mapq[] = {dup->lc_consensus ? (int) dup->lc_consensus->max_mapq : 0, dup->rc_consensus ? (int) dup->rc_consensus->max_mapq : 0};
 	bcf_update_info_int32(hdr, bcf_entry, "MAX_MAPQ", max_mapq, 2);
+	if (dup->sr_remap_info != NULL) {
+		bcf_update_info_int32(hdr, bcf_entry, "WEAK_SUPPORTING_1SR_READS", &dup->sr_remap_info->weak_supporting_reads, 1);
+		bcf_update_info_int32(hdr, bcf_entry, "STRONG_SUPPORTING_1SR_READS", &dup->sr_remap_info->strong_supporting_reads, 1);
+		bcf_update_info_int32(hdr, bcf_entry, "PERFECT_SUPPORTING_1SR_READS", &dup->sr_remap_info->perfect_supporting_reads, 1);
+		int ext_1sr_reads[] = { dup->lc_consensus ? dup->lc_consensus->left_ext_reads : 0,
+								dup->rc_consensus ? dup->rc_consensus->right_ext_reads : 0 };
+		bcf_update_info_int32(hdr, bcf_entry, "EXT_1SR_READS", ext_1sr_reads, 2);
+		int hq_ext_1sr_reads[] = { dup->lc_consensus ? dup->lc_consensus->hq_left_ext_reads : 0,
+								   dup->rc_consensus ? dup->rc_consensus->hq_right_ext_reads : 0 };
+		bcf_update_info_int32(hdr, bcf_entry, "HQ_EXT_1SR_READS", hq_ext_1sr_reads, 2);
+	}
 	bcf_update_info_int32(hdr, bcf_entry, "FULL_JUNCTION_SCORE", &dup->full_junction_score, 1);
 	bcf_update_info_int32(hdr, bcf_entry, "SPLIT_JUNCTION_SCORE", &dup->split_junction_score, 1);
 	bcf_update_info_string(hdr, bcf_entry, "SOURCE", dup->source.c_str());
@@ -780,57 +822,44 @@ void dup2bcf(bcf_hdr_t* hdr, bcf1_t* bcf_entry, char* chr_seq, std::string& cont
 template<typename T>
 inline T max(T a, T b, T c) { return std::max(std::max(a,b), c); }
 
-int score(char a, char b, int match_score, int mismatch_penalty) {
-	return (a == b || a == 'N' || b == 'N') ? match_score : mismatch_penalty;
+int score(char ref_base, char query_base, int match_score, int mismatch_penalty) {
+	return (ref_base == query_base || query_base == 'N') ? match_score : mismatch_penalty;
 }
-int* smith_waterman_gotoh(const char* ref, int ref_len, const char* read, int read_len, int match_score, int mismatch_penalty, int gap_open, int gap_extend) {
+int* smith_waterman_gotoh(const char* ref, int ref_len, const char* read, int read_len,
+		int match_score, int mismatch_penalty, int gap_open, int gap_extend) {
 	const int INF = 1000000;
 
-	int** dab = new int*[ref_len+1];
-	int** dag = new int*[ref_len+1];
-	int** dgb = new int*[ref_len+1];
-	for (int i = 0; i <= ref_len; i++) {
-		dab[i] = new int[read_len+1];
-		dag[i] = new int[read_len+1];
-		dgb[i] = new int[read_len+1];
-		std::fill(dab[i], dab[i]+read_len+1, 0);
-		std::fill(dag[i], dag[i]+read_len+1, 0);
-		std::fill(dgb[i], dgb[i]+read_len+1, 0);
-	}
+	int* dab = new int[2*(read_len+1)];
+	int* dag = new int[2*(read_len+1)];
+	int* dgb = new int[2*(read_len+1)];
 
-	dab[0][0] = dag[0][0] = dgb[0][0] = 0;
-	for (int i = 1; i <= ref_len; i++) {
-		dab[i][0] = -INF;
-		dag[i][0] = -INF;
-		dgb[i][0] = gap_open + (i-1)*gap_extend;
-	}
+	dab[0] = dag[0] = dgb[0] = 0;
+	dab[read_len+1] = dag[read_len+1] = -INF;
 	for (int i = 1; i <= read_len; i++) {
-		dab[0][i] = -INF;
-		dag[0][i] = gap_open + (i-1)*gap_extend;
-		dgb[0][i] = -INF;
-	}
-
-	for (int i = 1; i <= ref_len; i++) {
-		for (int j = 1; j <= read_len; j++) {
-			dab[i][j] = score(ref[i-1], read[j-1], match_score, mismatch_penalty) + max(dab[i-1][j-1], dag[i-1][j-1], dgb[i-1][j-1], 0);
-			dag[i][j] = max(gap_open + dab[i][j-1], gap_extend + dag[i][j-1], gap_open + dgb[i][j-1]);
-			dgb[i][j] = max(gap_open + dab[i-1][j], gap_open + dag[i-1][j], gap_extend + dgb[i-1][j]);
-		}
+		dab[i] = -INF;
+		dag[i] = gap_open + (i-1)*gap_extend;
+		dgb[i] = -INF;
 	}
 
 	int* prefix_scores = new int[read_len];
 	std::fill(prefix_scores, prefix_scores+read_len, 0);
 	for (int i = 1; i <= ref_len; i++) {
+		int curr_idx_i = (i%2) * (read_len + 1);
+		int up_idx_i = ((i-1)%2) * (read_len + 1);
+		dgb[curr_idx_i] = gap_open + (i-1)*gap_extend;
 		for (int j = 1; j <= read_len; j++) {
-			prefix_scores[j-1] = std::max(prefix_scores[j-1], dab[i][j]);
+			int curr_idx = curr_idx_i + j;
+			int left_idx = curr_idx-1;
+			int up_idx = up_idx_i + j;
+			int upleft_idx = up_idx-1;
+			int _score = score(ref[i-1], read[j-1], match_score, mismatch_penalty);
+			dab[curr_idx] = _score + max(dab[upleft_idx], dag[upleft_idx], dgb[upleft_idx], 0);
+			dag[curr_idx] = max(gap_open + dab[left_idx], gap_extend + dag[left_idx], gap_open + dgb[left_idx]);
+			dgb[curr_idx] = max(gap_open + dab[up_idx], gap_open + dag[up_idx], gap_extend + dgb[up_idx]);
+			prefix_scores[j-1] = std::max(prefix_scores[j-1], dab[curr_idx]);
 		}
 	}
 
-	for (int i = 0; i <= ref_len; i++) {
-		delete[] dab[i];
-		delete[] dag[i];
-		delete[] dgb[i];
-	}
 	delete[] dab;
 	delete[] dag;
 	delete[] dgb;
@@ -858,56 +887,42 @@ int get_right_clip_size(StripedSmithWaterman::Alignment& aln) {
 	return cigar_int_to_op(aln.cigar[aln.cigar.size()-1]) == 'S' ? cigar_int_to_len(aln.cigar[aln.cigar.size()-1]) : 0;
 }
 
-bool is_left_clipped(StripedSmithWaterman::Alignment& aln, int min_clip_len = 0) {
+bool is_left_clipped(StripedSmithWaterman::Alignment& aln, int min_clip_len = 1) {
 	return get_left_clip_size(aln) >= min_clip_len;
 }
-bool is_right_clipped(StripedSmithWaterman::Alignment& aln, int min_clip_len = 0) {
+bool is_right_clipped(StripedSmithWaterman::Alignment& aln, int min_clip_len = 1) {
 	return get_right_clip_size(aln) >= min_clip_len;
 }
-bool is_clipped(StripedSmithWaterman::Alignment& aln, int min_clip_len = 0) {
+bool is_clipped(StripedSmithWaterman::Alignment& aln, int min_clip_len = 1) {
 	return is_left_clipped(aln, min_clip_len) || is_right_clipped(aln, min_clip_len);
 }
 
-std::string get_sv_type(bcf_hdr_t* hdr, bcf1_t* sv) {
-    char* data = NULL;
-    int len = 0;
-    if (bcf_get_info_string(hdr, sv, "SVTYPE", &data, &len) < 0) {
-        throw std::runtime_error("Failed to determine SVTYPE for sv " + std::string(sv->d.id));
-    }
-    std::string svtype = data;
-    delete[] data;
-    return svtype;
+int find_aln_prefix_score(std::vector<uint32_t> cigar, int prefix_len, int match_score, int mismatch_score, 
+						  int gap_open_score, int gap_extend_score) {
+	int score = 0;
+	for (int i = 0, j = 0; i < cigar.size() && j < prefix_len; i++) {
+		int op = cigar_int_to_op(cigar[i]);
+		int len = cigar_int_to_len(cigar[i]);
+		if (op == 'M') {
+			score += len*match_score;
+			j += len;
+		} else if (op == 'X') {
+			score += len*mismatch_score;
+			j += len;
+		} else if (op == 'I') {
+			score += gap_open_score + (len-1)*gap_extend_score;
+		} else if (op == 'D') {
+			score += gap_open_score + (len-1)*gap_extend_score;
+			j += len;
+		}
+	}
+	return score;
 }
 
-int get_sv_end(bcf_hdr_t* hdr, bcf1_t* sv) {
-    int* data = NULL;
-    int size = 0;
-    bcf_get_info_int32(hdr, sv, "END", &data, &size);
-    if (size > 0) {
-        int end = data[0];
-        delete[] data;
-        return end-1; // return 0-based
-    }
-
-    bcf_get_info_int32(hdr, sv, "SVLEN", &data, &size);
-    if (size > 0) {
-        int svlen = data[0];
-        delete[] data;
-        return sv->pos + abs(svlen);
-    }
-
-    throw std::runtime_error("SV " + std::string(sv->d.id) + "has no END or SVLEN annotation.");
-}
-
-std::string get_sv_info_str(bcf_hdr_t* hdr, bcf1_t* sv, std::string info) {
-    char* data = NULL;
-    int len = 0;
-    if (bcf_get_info_string(hdr, sv, info.c_str(), &data, &len) < 0) {
-        throw std::runtime_error("Failed to fetch " + info + " for sv " + std::string(sv->d.id));
-    }
-    std::string svtype = data;
-    delete[] data;
-    return svtype;
+int find_aln_suffix_score(std::vector<uint32_t> cigar, int suffix_len, int match_score, int mismatch_score, 
+						  int gap_open_score, int gap_extend_score) {
+	std::vector<uint32_t> rev_cigar(cigar.rbegin(), cigar.rend());
+	return find_aln_prefix_score(rev_cigar, suffix_len, match_score, mismatch_score, gap_open_score, gap_extend_score);
 }
 
 #endif //SURVINDEL2_UTILS_H

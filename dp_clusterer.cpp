@@ -316,7 +316,7 @@ void merge_sr_dp(int id, int contig_id, std::string contig_name, bcf_hdr_t* sr_h
 		mateseqs_to_retrieve[del->leftmost_leftfacing_seq] = del;
 	}
 
-	std::ifstream mateseqs_fin(workdir + "/workspace/" + std::to_string(contig_id) + ".mateseqs");
+	std::ifstream mateseqs_fin(workdir + "/workspace/" + std::to_string(contig_id) + ".sc_mateseqs");
 	std::string qname, seq;
 	while (mateseqs_fin >> qname >> seq) {
 		if (!mateseqs_to_retrieve.count(qname)) continue;

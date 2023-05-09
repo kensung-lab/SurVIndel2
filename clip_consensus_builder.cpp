@@ -17,6 +17,7 @@
 #include "libs/IntervalTree.h"
 #include "sam_utils.h"
 #include "stat_tests.h"
+#include "extend_1sr_consensus.h"
 
 config_t config;
 stats_t stats;
@@ -403,9 +404,18 @@ void find_indels_from_rc_lc_pairs(std::string contig_name, std::vector<consensus
 	remove_marked_consensuses(lc_consensuses, used_consensus_lc);
 }
 
-indel_t* find_indel_from_lc_consensus(consensus_t* consensus, hts_pos_t& remapped_other_end, std::string contig_name,
-		StripedSmithWaterman::Aligner& aligner) {
+indel_t* find_indel_from_lc_consensus(consensus_t* consensus, hts_pos_t& remapped_other_end, std::string contig_name, open_samFile_t* bam_file,
+		StripedSmithWaterman::Aligner& aligner, std::unordered_map<std::string, std::pair<std::string, int> >& mateseqs_w_mapq) {
 	if (!consensus->left_clipped) return NULL;
+
+	int old_consensus_len = consensus->consensus.length();
+	extend_lc_consensus(consensus, contig_name, chr_seqs.get_len(contig_name), config, bam_file, mateseqs_w_mapq);
+	int l_ext_len = consensus->consensus.length() - old_consensus_len;
+
+	old_consensus_len = consensus->consensus.length();
+	extend_consensus_to_right(consensus, consensus->end, consensus->end+config.max_is-config.read_len, contig_name,
+			chr_seqs.get_len(contig_name), config, bam_file, mateseqs_w_mapq);
+	int r_ext_len = consensus->consensus.length() - old_consensus_len;
 
 	hts_pos_t remap_target_start = consensus->remap_boundary;
 	hts_pos_t remap_target_end = consensus->remap_boundary + config.max_is;
@@ -413,8 +423,8 @@ indel_t* find_indel_from_lc_consensus(consensus_t* consensus, hts_pos_t& remappe
 		remap_target_start = consensus->breakpoint - config.max_is - 2*consensus->consensus.length();
 		remap_target_end = consensus->breakpoint + config.max_is + 2*consensus->consensus.length();
 	}
-	remap_target_start = std::max(remap_target_start, hts_pos_t(0));
-	remap_target_end = std::min(remap_target_end, chr_seqs.get_len(contig_name));
+	remap_target_start = std::max(remap_target_start-l_ext_len, hts_pos_t(0));
+	remap_target_end = std::min(remap_target_end+r_ext_len, chr_seqs.get_len(contig_name));
 
 	// do not attempt if reference region has Ns - this is because of in our aligner, Ns will always match
 	if (remap_target_start >= remap_target_end ||
@@ -422,33 +432,7 @@ indel_t* find_indel_from_lc_consensus(consensus_t* consensus, hts_pos_t& remappe
 		return NULL;
 	}
 
-	std::string clip = consensus->consensus.substr(0, consensus->clip_len);
-	std::string padded_clip = config.clip_penalty_padding() + consensus->consensus.substr(0, consensus->clip_len) + config.clip_penalty_padding();
-	if (clip.size() < config.min_clip_len) return NULL;
-
-	StripedSmithWaterman::Alignment aln;
-	StripedSmithWaterman::Filter filter;
-	char* region_start = chr_seqs.get_seq(contig_name) + remap_target_start;
-	aligner.Align(padded_clip.c_str(), region_start, remap_target_end - remap_target_start, filter, &aln, 0);
-	int best_aln_score = aln.sw_score;
-	int new_start = 0;
-	indel_t* smallest_indel = NULL;
-
-	log_mtx.lock();
-	flog << "LC REMAP: " << consensus->name() << " " << aln.cigar_string << " " << contig_name << ":" << remap_target_start << "-" << remap_target_end << " ";
-	flog << padded_clip.c_str() << " " << (int) consensus->max_mapq << std::endl;
-	log_mtx.unlock();
-
-	if (is_left_clipped(aln)) {
-		clip = clip.substr(consensus->lowq_clip_portion);
-		padded_clip = config.clip_penalty_padding() + clip + config.clip_penalty_padding();
-//		aligner.Align(padded_clip.c_str(), region_start, remap_target_end - remap_target_start, filter, &aln, 0);
-
-		log_mtx.lock();
-		flog << consensus->name() << " " << aln.cigar_string << " " << contig_name << ":" << remap_target_start << "-" << remap_target_end << " ";
-		flog << padded_clip.c_str() << " TRIM" << std::endl;
-		log_mtx.unlock();
-	}
+	if (consensus->clip_len < config.min_clip_len) return NULL;
 
 	hts_pos_t ref_rh_end = consensus->end + EXTRA_SEQ;
 	if (ref_rh_end >= chr_seqs.get_len(contig_name)) ref_rh_end = chr_seqs.get_len(contig_name)-1;
@@ -459,6 +443,7 @@ indel_t* find_indel_from_lc_consensus(consensus_t* consensus, hts_pos_t& remappe
 	indel_t* indel = remap_consensus(consensus->consensus, chr_seqs.get_seq(contig_name), remap_target_start, remap_target_end-remap_target_start,
 			ref_rh_start, ref_rh_end-ref_rh_start, aligner, consensus, NULL, "1SR_LC", remapped_other_end, temp, false);
 	if (indel == NULL) return NULL;
+
 	if (indel->indel_type() == "DUP") {
 		duplication_t* dup = (duplication_t*) indel;
 		dup->original_start = dup->start, dup->original_end = dup->end;
@@ -467,9 +452,18 @@ indel_t* find_indel_from_lc_consensus(consensus_t* consensus, hts_pos_t& remappe
 	return indel;
 }
 
-indel_t* find_indel_from_rc_consensus(consensus_t* consensus, hts_pos_t& remapped_other_end, std::string contig_name,
-		StripedSmithWaterman::Aligner& aligner) {
+indel_t* find_indel_from_rc_consensus(consensus_t* consensus, hts_pos_t& remapped_other_end, std::string contig_name, open_samFile_t* bam_file,
+		StripedSmithWaterman::Aligner& aligner, std::unordered_map<std::string, std::pair<std::string, int> >& mateseqs_w_mapq) {
 	if (consensus->left_clipped) return NULL;
+
+	int old_consensus_len = consensus->consensus.length();
+	extend_rc_consensus(consensus, contig_name, chr_seqs.get_len(contig_name), config, bam_file, mateseqs_w_mapq);
+	int r_ext_len = consensus->consensus.length() - old_consensus_len;
+
+	old_consensus_len = consensus->consensus.length();
+	extend_consensus_to_left(consensus, consensus->start-config.max_is+config.read_len, consensus->start, contig_name,
+			chr_seqs.get_len(contig_name), config, bam_file, mateseqs_w_mapq);
+	int l_ext_len = consensus->consensus.length() - old_consensus_len;
 
 	hts_pos_t remap_target_end = consensus->remap_boundary;
 	hts_pos_t remap_target_start = consensus->remap_boundary - config.max_is;
@@ -477,8 +471,8 @@ indel_t* find_indel_from_rc_consensus(consensus_t* consensus, hts_pos_t& remappe
 		remap_target_start = consensus->breakpoint - config.max_is - 2*consensus->consensus.length();
 		remap_target_end = consensus->breakpoint + config.max_is + 2*consensus->consensus.length();
 	}
-	remap_target_start = std::max(remap_target_start, hts_pos_t(0));
-	remap_target_end = std::min(remap_target_end, chr_seqs.get_len(contig_name));
+	remap_target_start = std::max(remap_target_start-l_ext_len, hts_pos_t(0));
+	remap_target_end = std::min(remap_target_end+r_ext_len, chr_seqs.get_len(contig_name));
 
 	if (remap_target_start >= remap_target_end ||
 		has_Ns(chr_seqs.get_seq(contig_name), remap_target_start, remap_target_end-remap_target_start)) {
@@ -486,32 +480,7 @@ indel_t* find_indel_from_rc_consensus(consensus_t* consensus, hts_pos_t& remappe
 	}
 
 	std::string clip = consensus->consensus.substr(consensus->anchor_len());
-	std::string padded_clip = clip + config.clip_penalty_padding();
 	if (clip.size() < config.min_clip_len) return NULL;
-
-	StripedSmithWaterman::Alignment aln;
-	StripedSmithWaterman::Filter filter;
-	char* region_start = chr_seqs.get_seq(contig_name) + remap_target_start;
-	aligner.Align(padded_clip.c_str(), region_start, remap_target_end - remap_target_start, filter, &aln, 0);
-	int best_aln_score = aln.sw_score;
-	int new_start = 0;
-	indel_t* smallest_indel = NULL;
-
-	log_mtx.lock();
-	flog << "RC REMAP: " <<  consensus->name() << " " << aln.cigar_string << " " << contig_name << ":" << remap_target_start << "-" << remap_target_end << " ";
-	flog << padded_clip.c_str() << " " << (int) consensus->max_mapq << std::endl;
-	log_mtx.unlock();
-
-	if (is_right_clipped(aln)) {
-		clip = clip.substr(0, clip.length()-consensus->lowq_clip_portion);
-		padded_clip = clip + config.clip_penalty_padding();
-//		aligner.Align(padded_clip.c_str(), region_start, remap_target_end - remap_target_start, filter, &aln, 0);
-
-		log_mtx.lock();
-		flog << consensus->name() << " " << aln.cigar_string << " " << contig_name << ":" << remap_target_start << "-" << remap_target_end << " ";
-		flog << padded_clip.c_str() << " TRIM" << std::endl;
-		log_mtx.unlock();
-	}
 
 	hts_pos_t ref_lh_start = consensus->start - EXTRA_SEQ;
 	if (ref_lh_start < 0) ref_lh_start = 0;
@@ -522,6 +491,7 @@ indel_t* find_indel_from_rc_consensus(consensus_t* consensus, hts_pos_t& remappe
 	indel_t* indel = remap_consensus(consensus->consensus, chr_seqs.get_seq(contig_name), ref_lh_start, ref_lh_end-ref_lh_start, remap_target_start,
 			remap_target_end-remap_target_start, aligner, NULL, consensus, "1SR_RC", temp, remapped_other_end, true);
 	if (indel == NULL) return NULL;
+
 	if (indel->indel_type() == "DUP") {
 		duplication_t* dup = (duplication_t*) indel;
 		dup->original_start = dup->start, dup->original_end = dup->end;
@@ -530,8 +500,80 @@ indel_t* find_indel_from_rc_consensus(consensus_t* consensus, hts_pos_t& remappe
 	return indel;
 }
 
+void find_indels_from_unpaired_rc_consensuses(std::string contig_name, std::vector<consensus_t*>& rc_consensuses,
+		std::vector<indel_t*>& unpaired_rc_dels, std::vector<indel_t*>& unpaired_rc_dups, open_samFile_t* bam_file,
+		StripedSmithWaterman::Aligner& aligner, std::unordered_map<std::string, std::pair<std::string, int> >& mateseqs_w_mapq) {
+	for (int i = 0; i < rc_consensuses.size(); i++) {
+		consensus_t* consensus = rc_consensuses[i];
+		hts_pos_t remapped_other_end;
+		indel_t* smallest_indel = find_indel_from_rc_consensus(consensus, remapped_other_end, contig_name, bam_file, aligner, mateseqs_w_mapq);
+
+		if (smallest_indel == NULL) continue;
+		if (smallest_indel->indel_type() == "DEL") {
+			smallest_indel->sr_remap_info = new sr_remap_info_t(smallest_indel->end, remapped_other_end);
+			unpaired_rc_dels.push_back(smallest_indel);
+		} else {
+			smallest_indel->sr_remap_info = new sr_remap_info_t(smallest_indel->start, remapped_other_end);
+			unpaired_rc_dups.push_back(smallest_indel);
+		}
+	}
+}
+void find_indels_from_unpaired_lc_consensuses(std::string contig_name, std::vector<consensus_t*>& lc_consensuses,
+		std::vector<indel_t*>& unpaired_lc_dels, std::vector<indel_t*>& unpaired_lc_dups, open_samFile_t* bam_file,
+		StripedSmithWaterman::Aligner& aligner, std::unordered_map<std::string, std::pair<std::string, int> >& mateseqs_w_mapq) {
+	for (int i = 0; i < lc_consensuses.size(); i++) {
+		consensus_t* consensus = lc_consensuses[i];
+		hts_pos_t remapped_other_end;
+		indel_t* smallest_indel = find_indel_from_lc_consensus(consensus, remapped_other_end, contig_name, bam_file, aligner, mateseqs_w_mapq);
+
+		if (smallest_indel == NULL) continue;
+		if (smallest_indel->indel_type() == "DEL") {
+			smallest_indel->sr_remap_info = new sr_remap_info_t(smallest_indel->start, remapped_other_end);
+			unpaired_lc_dels.push_back(smallest_indel);
+		} else {
+			smallest_indel->sr_remap_info = new sr_remap_info_t(smallest_indel->end, remapped_other_end);
+			unpaired_lc_dups.push_back(smallest_indel);
+		}
+	}
+}
+
+void find_indels_from_unpaired_hsr_rc_consensuses(std::string contig_name, std::vector<consensus_t*>& rc_hsr_consensuses,
+		std::vector<indel_t*>& unpaired_rc_dels, std::vector<indel_t*>& unpaired_rc_dups, open_samFile_t* bam_file,
+		StripedSmithWaterman::Aligner& aligner, std::unordered_map<std::string, std::pair<std::string, int> >& mateseqs_w_mapq) {
+	for (consensus_t* hsr_consensus : rc_hsr_consensuses) {
+		hts_pos_t remapped_other_end;
+		indel_t* indel = remap_rc_cluster(hsr_consensus, remapped_other_end, contig_name, chr_seqs.get_seq(contig_name),
+				chr_seqs.get_len(contig_name), aligner, bam_file, mateseqs_w_mapq);
+		if (indel == NULL) continue;
+		if (indel->indel_type() == "DEL") {
+			indel->sr_remap_info = new sr_remap_info_t(indel->end, remapped_other_end);
+			unpaired_rc_dels.push_back(indel);
+		} else if (indel->indel_type() == "DUP") {
+			indel->sr_remap_info = new sr_remap_info_t(indel->start, remapped_other_end);
+			unpaired_rc_dups.push_back(indel);
+		}
+	}
+}
+void find_indels_from_unpaired_hsr_lc_consensuses(std::string contig_name, std::vector<consensus_t*>& lc_hsr_consensuses,
+		std::vector<indel_t*>& unpaired_lc_dels, std::vector<indel_t*>& unpaired_lc_dups, open_samFile_t* bam_file,
+		StripedSmithWaterman::Aligner& aligner, std::unordered_map<std::string, std::pair<std::string, int> >& mateseqs_w_mapq) {
+	for (consensus_t* hsr_consensus : lc_hsr_consensuses) {
+		hts_pos_t remapped_other_end;
+		indel_t* indel = remap_lc_cluster(hsr_consensus, remapped_other_end, contig_name, chr_seqs.get_seq(contig_name),
+				chr_seqs.get_len(contig_name), aligner, bam_file, mateseqs_w_mapq);
+		if (indel == NULL) continue;
+		if (indel->indel_type() == "DEL") {
+			indel->sr_remap_info = new sr_remap_info_t(indel->start, remapped_other_end);
+			unpaired_lc_dels.push_back(indel);
+		} else if (indel->indel_type() == "DUP") {
+			indel->sr_remap_info = new sr_remap_info_t(indel->end, remapped_other_end);
+			unpaired_lc_dups.push_back(indel);
+		}
+	}
+}
+
 void build_clip_consensuses(int id, int contig_id, std::string contig_name, std::vector<deletion_t*>& deletions,
-                            std::vector<duplication_t*>& duplications) {
+                            std::vector<duplication_t*>& duplications, std::unordered_map<std::string, std::pair<std::string, int> >& mateseqs_w_mapq) {
 
 	std::vector<deletion_t*> contig_deletions;
 	std::vector<duplication_t*> contig_duplications;
@@ -540,14 +582,14 @@ void build_clip_consensuses(int id, int contig_id, std::string contig_name, std:
 	StripedSmithWaterman::Filter filter;
 
     std::string clip_fname = workdir + "/workspace/" + std::to_string(contig_id) + "-CLIP.bam";
-    open_samFile_t* bam_file = open_samFile(clip_fname, true);
+    open_samFile_t* clip_file = open_samFile(clip_fname, true);
 
-    hts_itr_t* iter = sam_itr_querys(bam_file->idx, bam_file->header, contig_name.c_str());
+    hts_itr_t* iter = sam_itr_querys(clip_file->idx, clip_file->header, contig_name.c_str());
     bam1_t* read = bam_init1();
 
     // divide soft-clipped reads into left-clipped and right-clipped
     std::vector<bam_redux_t*> lc_reads, rc_reads;
-    while (sam_itr_next(bam_file->file, iter, read) >= 0) {
+    while (sam_itr_next(clip_file->file, iter, read) >= 0) {
         if (is_left_clipped(read, config.min_clip_len)) {
             lc_reads.push_back(new bam_redux_t(read));
         }
@@ -559,7 +601,7 @@ void build_clip_consensuses(int id, int contig_id, std::string contig_name, std:
     bam_destroy1(read);
 
     hts_itr_destroy(iter);
-    close_samFile(bam_file);
+    close_samFile(clip_file);
 
     std::vector<consensus_t*> rc_consensuses, lc_consensuses;
     std::vector<bam_redux_t*> curr_candidate_cluster;
@@ -629,28 +671,19 @@ void build_clip_consensuses(int id, int contig_id, std::string contig_name, std:
 	std::sort(full_consensuses.begin(), full_consensuses.end(), consensus_cmp);
 
     // TODO: remove this logging when not needed anymore
+	log_mtx.lock();
 	for (consensus_t* consensus : rc_consensuses) {
-		log_mtx.lock();
 		flog << consensus->name() << " RC " << consensus->consensus << " " << consensus->breakpoint << " " << consensus->remap_boundary << std::endl;
-		log_mtx.unlock();
 	}
 	for (consensus_t* consensus : lc_consensuses) {
-		log_mtx.lock();
 		flog << consensus->name() << " LC " << consensus->consensus << " " << consensus->breakpoint << " " << consensus->remap_boundary << std::endl;
-		log_mtx.unlock();
 	}
 	for (consensus_t* consensus : rc_hsr_consensuses) {
-		log_mtx.lock();
 		flog << consensus->name() << " HSR_RC " << consensus->consensus << " " << consensus->breakpoint << " " << consensus->remap_boundary << std::endl;
-		log_mtx.unlock();
 	}
 	for (consensus_t* consensus : lc_hsr_consensuses) {
-		log_mtx.lock();
 		flog << consensus->name() << " HSR_LC " << consensus->consensus << " " << consensus->breakpoint << " " << consensus->remap_boundary << std::endl;
-		log_mtx.unlock();
 	}
-
-	log_mtx.lock();
 	flog << "N CONSENSUSES: " << contig_name << " " << rc_consensuses.size() << " " << lc_consensuses.size() << " " << rc_hsr_consensuses.size() << " " << lc_hsr_consensuses.size() << std::endl;
 	log_mtx.unlock();
 
@@ -662,64 +695,59 @@ void build_clip_consensuses(int id, int contig_id, std::string contig_name, std:
 
     /* == Deal with unpaired consensuses == */
 
+	open_samFile_t* bam_file = open_samFile(complete_bam_fname);
+
     /* == Find possible indels by remapping the clips of unpaired consensuses == */
     std::vector<indel_t*> unpaired_rc_dels, unpaired_lc_dels;
     std::vector<indel_t*> unpaired_rc_dups, unpaired_lc_dups;
-    for (int i = 0; i < rc_consensuses.size(); i++) {
-		consensus_t* consensus = rc_consensuses[i];
-		hts_pos_t remapped_other_end;
-		indel_t* smallest_indel = find_indel_from_rc_consensus(consensus, remapped_other_end, contig_name, aligner);
+    find_indels_from_unpaired_rc_consensuses(contig_name, rc_consensuses, unpaired_rc_dels, unpaired_rc_dups, bam_file, aligner, mateseqs_w_mapq);
+    find_indels_from_unpaired_lc_consensuses(contig_name, lc_consensuses, unpaired_lc_dels, unpaired_lc_dups, bam_file, aligner, mateseqs_w_mapq);
+//    for (int i = 0; i < lc_consensuses.size(); i++) {
+//        consensus_t* consensus = lc_consensuses[i];
+//		hts_pos_t remapped_other_end;
+//		indel_t* smallest_indel = find_indel_from_lc_consensus(consensus, remapped_other_end, contig_name, bam_file, aligner, mateseqs_w_mapq);
+//
+//		if (smallest_indel == NULL) continue;
+//		if (smallest_indel->indel_type() == "DEL") {
+//			smallest_indel->sr_remap_info = new sr_remap_info_t(smallest_indel->start, remapped_other_end);
+//			unpaired_lc_dels.push_back(smallest_indel);
+//		} else {
+//			smallest_indel->sr_remap_info = new sr_remap_info_t(smallest_indel->end, remapped_other_end);
+//			unpaired_lc_dups.push_back(smallest_indel);
+//		}
+//    }
 
-		if (smallest_indel == NULL) continue;
-		if (smallest_indel->indel_type() == "DEL") {
-			smallest_indel->sr_remap_info = new sr_remap_info_t(smallest_indel->end, remapped_other_end);
-			unpaired_rc_dels.push_back(smallest_indel);
-		} else {
-			smallest_indel->sr_remap_info = new sr_remap_info_t(smallest_indel->start, remapped_other_end);
-			unpaired_rc_dups.push_back(smallest_indel);
-		}
-	}
-    for (int i = 0; i < lc_consensuses.size(); i++) {
-        consensus_t* consensus = lc_consensuses[i];
-		hts_pos_t remapped_other_end;
-		indel_t* smallest_indel = find_indel_from_lc_consensus(consensus, remapped_other_end, contig_name, aligner);
+    find_indels_from_unpaired_hsr_rc_consensuses(contig_name, rc_hsr_consensuses, unpaired_rc_dels, unpaired_rc_dups, bam_file, aligner, mateseqs_w_mapq);
+    find_indels_from_unpaired_hsr_lc_consensuses(contig_name, lc_hsr_consensuses, unpaired_lc_dels, unpaired_lc_dups, bam_file, aligner, mateseqs_w_mapq);
 
-		if (smallest_indel == NULL) continue;
-		if (smallest_indel->indel_type() == "DEL") {
-			smallest_indel->sr_remap_info = new sr_remap_info_t(smallest_indel->start, remapped_other_end);
-			unpaired_lc_dels.push_back(smallest_indel);
-		} else {
-			smallest_indel->sr_remap_info = new sr_remap_info_t(smallest_indel->end, remapped_other_end);
-			unpaired_lc_dups.push_back(smallest_indel);
-		}
-    }
+//    for (consensus_t* hsr_consensus : rc_hsr_consensuses) {
+//    	hts_pos_t remapped_other_end;
+//		indel_t* indel = remap_rc_cluster(hsr_consensus, remapped_other_end, contig_name, chr_seqs.get_seq(contig_name),
+//				chr_seqs.get_len(contig_name), aligner, bam_file, mateseqs_w_mapq);
+//		if (indel == NULL) continue;
+//		if (indel->indel_type() == "DEL") {
+//			indel->sr_remap_info = new sr_remap_info_t(indel->end, remapped_other_end);
+//			unpaired_rc_dels.push_back(indel);
+//		} else if (indel->indel_type() == "DUP") {
+//			indel->sr_remap_info = new sr_remap_info_t(indel->start, remapped_other_end);
+//			unpaired_rc_dups.push_back(indel);
+//		}
+//	}
+//	for (consensus_t* hsr_consensus : lc_hsr_consensuses) {
+//		hts_pos_t remapped_other_end;
+//		indel_t* indel = remap_lc_cluster(hsr_consensus, remapped_other_end, contig_name, chr_seqs.get_seq(contig_name),
+//				chr_seqs.get_len(contig_name), aligner, bam_file, mateseqs_w_mapq);
+//		if (indel == NULL) continue;
+//		if (indel->indel_type() == "DEL") {
+//			indel->sr_remap_info = new sr_remap_info_t(indel->start, remapped_other_end);
+//			unpaired_lc_dels.push_back(indel);
+//		} else if (indel->indel_type() == "DUP") {
+//			indel->sr_remap_info = new sr_remap_info_t(indel->end, remapped_other_end);
+//			unpaired_lc_dups.push_back(indel);
+//		}
+//	}
 
-    for (consensus_t* hsr_consensus : rc_hsr_consensuses) {
-    	hts_pos_t remapped_other_end;
-		indel_t* indel = remap_rc_cluster(hsr_consensus, remapped_other_end, chr_seqs.get_seq(contig_name), chr_seqs.get_len(contig_name),
-				aligner);
-		if (indel == NULL) continue;
-		if (indel->indel_type() == "DEL") {
-			indel->sr_remap_info = new sr_remap_info_t(indel->end, remapped_other_end);
-			unpaired_rc_dels.push_back(indel);
-		} else if (indel->indel_type() == "DUP") {
-			indel->sr_remap_info = new sr_remap_info_t(indel->start, remapped_other_end);
-			unpaired_rc_dups.push_back(indel);
-		}
-	}
-	for (consensus_t* hsr_consensus : lc_hsr_consensuses) {
-		hts_pos_t remapped_other_end;
-		indel_t* indel = remap_lc_cluster(hsr_consensus, remapped_other_end, chr_seqs.get_seq(contig_name), chr_seqs.get_len(contig_name),
-				aligner);
-		if (indel == NULL) continue;
-		if (indel->indel_type() == "DEL") {
-			indel->sr_remap_info = new sr_remap_info_t(indel->start, remapped_other_end);
-			unpaired_lc_dels.push_back(indel);
-		} else if (indel->indel_type() == "DUP") {
-			indel->sr_remap_info = new sr_remap_info_t(indel->end, remapped_other_end);
-			unpaired_lc_dups.push_back(indel);
-		}
-	}
+	close_samFile(bam_file);
 
 	auto remapped_bp_cmp = [] (indel_t* i1, indel_t* i2) { return i1->sr_remap_info->remapped_bp < i2->sr_remap_info->remapped_bp; };
 	std::sort(unpaired_lc_dels.begin(), unpaired_lc_dels.end(), remapped_bp_cmp);
@@ -727,7 +755,7 @@ void build_clip_consensuses(int id, int contig_id, std::string contig_name, std:
 	std::sort(unpaired_rc_dels.begin(), unpaired_rc_dels.end(), remapped_bp_cmp);
 	std::sort(unpaired_rc_dups.begin(), unpaired_rc_dups.end(), remapped_bp_cmp);
 
-    bam_file = get_bam_reader(complete_bam_fname);
+    clip_file = get_bam_reader(complete_bam_fname);
 
     // define regions of interest from the remapped clips/breakpoints
     std::vector<char*> regions;
@@ -753,7 +781,7 @@ void build_clip_consensuses(int id, int contig_id, std::string contig_name, std:
     }
 
     if (!regions.empty()) {
-    iter = sam_itr_regarray(bam_file->idx, bam_file->header, regions.data(), regions.size());
+    iter = sam_itr_regarray(clip_file->idx, clip_file->header, regions.data(), regions.size());
     read = bam_init1();
 
     /* == Find reads that support the remapped breakpoint == */
@@ -762,7 +790,7 @@ void build_clip_consensuses(int id, int contig_id, std::string contig_name, std:
     out_mtx.unlock();
     int curr_rc_del = 0, curr_lc_del = 0, curr_rc_dup = 0, curr_lc_dup = 0;
     int reads_counter = 0;
-    while (sam_itr_next(bam_file->file, iter, read) >= 0) {
+    while (sam_itr_next(clip_file->file, iter, read) >= 0) {
         if (is_unmapped(read) || !is_primary(read)) continue;
 
         reads_counter++;
@@ -836,7 +864,7 @@ void build_clip_consensuses(int id, int contig_id, std::string contig_name, std:
     }
 
     }
-    release_bam_reader(bam_file);
+    release_bam_reader(clip_file);
 
     auto rm_small_indels = [](indel_t* indel) { return indel->len() < config.min_sv_size; };
     contig_deletions.erase(std::remove_if(contig_deletions.begin(), contig_deletions.end(), rm_small_indels), contig_deletions.end());
@@ -855,7 +883,16 @@ void build_consensuses(int id, int contig_id, std::string contig_name) {
     std::vector<deletion_t*>& deletions = deletions_by_chr[contig_name];
     std::vector<duplication_t*>& duplications = duplications_by_chr[contig_name];
     mtx.unlock();
-    build_clip_consensuses(id, contig_id, contig_name, deletions, duplications);
+
+    std::unordered_map<std::string, std::pair<std::string, int> > mateseqs_w_mapq;
+    std::string fname = workdir + "/workspace/" + std::to_string(contig_id) + ".dc_mateseqs";
+    std::ifstream fin(fname);
+    std::string qname, read_seq; int mapq;
+    while (fin >> qname >> read_seq >> mapq) {
+    	mateseqs_w_mapq[qname] = {read_seq, mapq};
+    }
+
+	build_clip_consensuses(id, contig_id, contig_name, deletions, duplications, mateseqs_w_mapq);
 }
 
 void size_and_depth_filtering(int id, std::string contig_name) {
@@ -928,6 +965,7 @@ int main(int argc, char* argv[]) {
     std::vector<std::future<void> > futures;
     for (size_t contig_id = 0; contig_id < contig_map.size(); contig_id++) {
         std::string contig_name = contig_map.get_name(contig_id);
+//        if (contig_name != "chr20") continue;
         std::future<void> future = thread_pool.push(build_consensuses, contig_id, contig_name);
         futures.push_back(std::move(future));
     }
@@ -1015,8 +1053,10 @@ int main(int argc, char* argv[]) {
             	(del->rc_consensus == NULL || del->rc_consensus->max_mapq < config.high_confidence_mapq)) {
 				filters.push_back("LOW_MAPQ_CONSENSUSES");
             }
-            if (del->sr_remap_info && (del->sr_remap_info->weak_supporting_reads < 3 || del->sr_remap_info->strong_supporting_reads < 1)) {
-            	filters.push_back("WEAK_SUPPORT");
+            if (del->source == "1SR_RC" || del->source == "1HSR_RC") {
+            	if (del->rc_consensus->right_ext_reads < 3) filters.push_back("FAILED_TO_EXTEND");
+            } else if (del->source == "1SR_LC" || del->source == "1HSR_LC") {
+            	if (del->lc_consensus->left_ext_reads < 3) filters.push_back("FAILED_TO_EXTEND");
             }
 
             if (filters.empty()) {
@@ -1059,8 +1099,10 @@ int main(int argc, char* argv[]) {
             if (dup->len() >= config.min_size_for_depth_filtering && dup->disc_pairs < 3) {
                 filters.push_back("NOT_ENOUGH_OW_PAIRS");
             }
-            if (dup->sr_remap_info && (dup->sr_remap_info->weak_supporting_reads < 3 || dup->sr_remap_info->strong_supporting_reads < 1)) {
-				filters.push_back("WEAK_SUPPORT");
+            if (dup->source == "1SR_RC" || dup->source == "1HSR_RC") {
+				if (dup->rc_consensus->right_ext_reads < 3) filters.push_back("FAILED_TO_EXTEND");
+            } else if (dup->source == "1SR_LC" || dup->source == "1HSR_LC") {
+            	if (dup->lc_consensus->left_ext_reads < 3) filters.push_back("FAILED_TO_EXTEND");
 			}
 
             if (filters.empty()) {

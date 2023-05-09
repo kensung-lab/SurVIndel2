@@ -17,6 +17,9 @@ std::vector<uint32_t> depths;
 std::vector<int> as_diff_dist;
 std::mutex mtx;
 
+std::mutex* mtx_contig;
+std::vector<std::vector<std::string> > mate_seqs;
+
 uint32_t* isize_counts;
 std::vector<std::vector<uint32_t> > isizes_count_geq_i;
 
@@ -54,7 +57,7 @@ void categorize(int id, std::string bam_fname, int contig_id, std::string contig
     samFile* clip_writer = get_writer(prefix + "-CLIP.bam", bam_file->header);
     samFile* hsr_writer = get_writer(prefix + "-HSR.bam", bam_file->header);
     samFile* dp_writer = get_writer(prefix + "-DP.bam", bam_file->header);
-    std::ofstream mateseqs_fout(prefix + ".mateseqs");
+    std::ofstream mateseqs_fout(prefix + ".sc_mateseqs");
 
     uint64_t sum_is = 0;
     uint32_t n_is = 0;
@@ -97,6 +100,11 @@ void categorize(int id, std::string bam_fname, int contig_id, std::string contig
         	} else if (bam_is_rev(read) && (read->core.isize < -config.max_is || read->core.isize > 0)) {
         		mateseqs_fout << bam_get_qname(read) << " " << get_sequence(read) << std::endl;
         	}
+        } else if (!is_samechr(read) || is_unmapped(read)) {
+        	std::string qname = bam_get_qname(read), read_seq = get_sequence(read, true);
+        	mtx_contig[read->core.mtid].lock();
+			mate_seqs[read->core.mtid].push_back(qname + " " + read_seq + " " + std::to_string(read->core.qual));
+			mtx_contig[read->core.mtid].unlock();
         }
 
         if (!is_samechr(read) || read->core.qual < 20) continue;
@@ -171,6 +179,9 @@ int main(int argc, char* argv[]) {
         rnd_pos_map[contig_name].push_back(pos);
     }
 
+    mtx_contig = new std::mutex[contig_map.size()];
+	mate_seqs.resize(contig_map.size());
+
     isize_counts = new uint32_t[config.max_is+1];
     std::fill(isize_counts, isize_counts+config.max_is+1, 0);
     isizes_count_geq_i.resize(config.max_is+1);
@@ -191,6 +202,15 @@ int main(int argc, char* argv[]) {
             std::cout << s << std::endl;
         }
     }
+
+    for (int i = 0; i < contig_map.size(); i++) {
+		if (mate_seqs[i].empty()) continue;
+		std::ofstream mate_seqs_fout(workspace + "/" + std::to_string(i) + ".dc_mateseqs");
+		for (std::string& mate_seq : mate_seqs[i]) {
+			mate_seqs_fout << mate_seq << std::endl;
+		}
+		mate_seqs_fout.close();
+	}
 
     uint64_t sum_is = 0;
     uint32_t n_is = 0;

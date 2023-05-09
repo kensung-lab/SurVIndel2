@@ -8,14 +8,26 @@
 #include "utils.h"
 #include "sam_utils.h"
 #include "remapping.h"
+#include "extend_1sr_consensus.h"
 
 extern config_t config;
 
 const int EXTRA_SEQ = 10;
 
 
-indel_t* remap_rc_cluster(consensus_t* consensus, hts_pos_t& remapped_other_end, char* contig_seq, hts_pos_t contig_len,
-		StripedSmithWaterman::Aligner& aligner) {
+indel_t* remap_rc_cluster(consensus_t* consensus, hts_pos_t& remapped_other_end, std::string contig_name,
+		char* contig_seq, hts_pos_t contig_len, StripedSmithWaterman::Aligner& aligner, open_samFile_t* bam_file,
+		std::unordered_map<std::string, std::pair<std::string, int> >& mateseqs_w_mapq) {
+
+	int old_consensus_len = consensus->consensus.length();
+	extend_rc_consensus(consensus, contig_name, contig_len, config, bam_file, mateseqs_w_mapq);
+	int r_ext_len = consensus->consensus.length() - old_consensus_len;
+
+	old_consensus_len = consensus->consensus.length();
+	extend_consensus_to_left(consensus, consensus->start-config.max_is+config.read_len, consensus->start, contig_name, contig_len,
+			config, bam_file, mateseqs_w_mapq);
+	int l_ext_len = consensus->consensus.length() - old_consensus_len;
+
 	hts_pos_t ref_start = std::max(hts_pos_t(0), consensus->start - EXTRA_SEQ);
 	hts_pos_t ref_end = std::min(consensus->end + config.max_is, contig_len);
 
@@ -25,8 +37,8 @@ indel_t* remap_rc_cluster(consensus_t* consensus, hts_pos_t& remapped_other_end,
 		remap_target_start = consensus->breakpoint - config.max_is - 2*consensus->consensus.length();
 		remap_target_end = consensus->breakpoint + config.max_is + 2*consensus->consensus.length();
 	}
-	remap_target_start = std::max(remap_target_start, hts_pos_t(0));
-	remap_target_end = std::min(remap_target_end, contig_len);
+	remap_target_start = std::max(remap_target_start-l_ext_len, hts_pos_t(0));
+	remap_target_end = std::min(remap_target_end+r_ext_len, contig_len);
 
 	if (remap_target_start >= remap_target_end ||
 		has_Ns(contig_seq, remap_target_start, remap_target_end-remap_target_start)) {
@@ -40,8 +52,19 @@ indel_t* remap_rc_cluster(consensus_t* consensus, hts_pos_t& remapped_other_end,
     return indel;
 }
 
-indel_t* remap_lc_cluster(consensus_t* consensus, hts_pos_t& remapped_other_end, char* contig_seq, hts_pos_t contig_len,
-		StripedSmithWaterman::Aligner& aligner) {
+indel_t* remap_lc_cluster(consensus_t* consensus, hts_pos_t& remapped_other_end, std::string contig_name,
+		char* contig_seq, hts_pos_t contig_len, StripedSmithWaterman::Aligner& aligner, open_samFile_t* bam_file,
+		std::unordered_map<std::string, std::pair<std::string, int> >& mateseqs_w_mapq) {
+
+	int old_consensus_len = consensus->consensus.length();
+	extend_lc_consensus(consensus, contig_name, contig_len, config, bam_file, mateseqs_w_mapq);
+	int l_ext_len = consensus->consensus.length() - old_consensus_len;
+
+	old_consensus_len = consensus->consensus.length();
+	extend_consensus_to_right(consensus, consensus->end, consensus->end+config.max_is-config.read_len, contig_name,
+			contig_len, config, bam_file, mateseqs_w_mapq);
+	int r_ext_len = consensus->consensus.length() - old_consensus_len;
+
 	hts_pos_t ref_end = std::min(consensus->end + EXTRA_SEQ, contig_len);
 	hts_pos_t ref_start = std::max(hts_pos_t(0), consensus->start - config.max_is);
 
@@ -51,8 +74,8 @@ indel_t* remap_lc_cluster(consensus_t* consensus, hts_pos_t& remapped_other_end,
 		remap_target_start = consensus->breakpoint - config.max_is - 2*consensus->consensus.length();
 		remap_target_end = consensus->breakpoint + config.max_is + 2*consensus->consensus.length();
 	}
-	remap_target_start = std::max(remap_target_start, hts_pos_t(0));
-	remap_target_end = std::min(remap_target_end, contig_len);
+	remap_target_start = std::max(remap_target_start-l_ext_len, hts_pos_t(0));
+	remap_target_end = std::min(remap_target_end+r_ext_len, contig_len);
 
 	// do not attempt if reference region has Ns - this is because of in our aligner, Ns will always match
 	if (remap_target_start >= remap_target_end ||

@@ -2,6 +2,7 @@
 
 #include "htslib/vcf.h"
 #include "htslib/tbx.h"
+#include "sam_utils.h"
 #include "utils.h"
 
 chr_seqs_map_t chr_seqs;

@@ -472,17 +472,22 @@ void set_median_cov(indel_t* indel,
 
 	hts_pos_t indel_tested_len = std::min(indel->end-indel->start, hts_pos_t(INDEL_TESTED_REGION_SIZE));
 
-	std::sort(flanking_left_cov.begin(), flanking_left_cov.end());
-	indel->med_left_flanking_cov = flanking_left_cov[flanking_left_cov.size()/2];
-
-	std::sort(indel_left_cov.begin(), indel_left_cov.end(), std::greater<uint32_t>());
-	indel->med_indel_left_cov = indel_left_cov[indel_tested_len/2];
-
-	std::sort(indel_right_cov.begin(), indel_right_cov.end(), std::greater<uint32_t>());
-	indel->med_indel_right_cov = indel_right_cov[indel_tested_len/2];
-
-	std::sort(flanking_right_cov.begin(), flanking_right_cov.end());
-	indel->med_right_flanking_cov = flanking_right_cov[flanking_right_cov.size()/2];
+	if (flanking_left_cov.size() >= 1) {
+		std::sort(flanking_left_cov.begin(), flanking_left_cov.end());
+		indel->med_left_flanking_cov = flanking_left_cov[flanking_left_cov.size()/2];
+	}
+	if (indel_left_cov.size() >= 1) {
+		std::sort(indel_left_cov.begin(), indel_left_cov.end(), std::greater<uint32_t>());
+		indel->med_indel_left_cov = indel_left_cov[indel_tested_len/2];
+	}
+	if (indel_right_cov.size() >= 1) {
+		std::sort(indel_right_cov.begin(), indel_right_cov.end(), std::greater<uint32_t>());
+		indel->med_indel_right_cov = indel_right_cov[indel_tested_len/2];
+	}
+	if (flanking_right_cov.size() >= 1) {
+		std::sort(flanking_right_cov.begin(), flanking_right_cov.end());
+		indel->med_right_flanking_cov = flanking_right_cov[flanking_right_cov.size()/2];
+	}
 }
 
 void depth_filter_indel(std::string contig_name, std::vector<indel_t*>& indels, open_samFile_t* bam_file, config_t& config) {
@@ -494,7 +499,7 @@ void depth_filter_indel(std::string contig_name, std::vector<indel_t*>& indels, 
     std::vector<char*> regions;
     for (indel_t* indel : indels) {
         std::stringstream ss;
-        ss << contig_name << ":" << std::max(hts_pos_t(0), indel->start - FLANKING_SIZE) << "-" << std::min(indel->start + INDEL_TESTED_REGION_SIZE, indel->end);
+        ss << contig_name << ":" << std::max(hts_pos_t(1), indel->start - FLANKING_SIZE) << "-" << std::min(indel->start + INDEL_TESTED_REGION_SIZE, indel->end);
         char* region = new char[1000];
         strcpy(region, ss.str().c_str());
         regions.push_back(region);
@@ -546,8 +551,8 @@ void depth_filter_indel(std::string contig_name, std::vector<indel_t*>& indels, 
 				indel_left_cov_by_base[i] = std::vector<uint32_t>(indel_tested_len);
 				indel_right_cov_by_base[i] = std::vector<uint32_t>(indel_tested_len);
 				flanking_right_cov_by_base[i] = std::vector<uint32_t>(FLANKING_SIZE);
-				left_cluster_cov_by_base[i] = std::vector<uint32_t>(config.max_is+1);
-				right_cluster_cov_by_base[i] = std::vector<uint32_t>(config.max_is+1);
+				left_cluster_cov_by_base[i] = std::vector<uint32_t>(std::max(hts_pos_t(0), indel->start-indel->rc_anchor_start+1));
+				right_cluster_cov_by_base[i] = std::vector<uint32_t>(std::max(hts_pos_t(0), indel->lc_anchor_end-indel->end+1));
 			}
 
 			hts_pos_t b = std::max(hts_pos_t(0), rs-indel->rc_anchor_start), e = std::min(re-indel->rc_anchor_start, indel->start-indel->rc_anchor_start);
@@ -601,6 +606,7 @@ void depth_filter_indel(std::string contig_name, std::vector<indel_t*>& indels, 
     for (int i = 0; i < indels.size(); i++) {
         indel_t* indel = indels[i];
 		hts_pos_t indel_tested_len = std::min(indel->end-indel->start, hts_pos_t(INDEL_TESTED_REGION_SIZE));
+		indel_tested_len = std::max(hts_pos_t(1), indel_tested_len);
 
 		indel->left_flanking_cov = flanking_left_cov[i] / FLANKING_SIZE;
         indel->indel_left_cov = indel_left_cov[i] / indel_tested_len;
@@ -672,8 +678,8 @@ void calculate_confidence_interval_size(std::string contig_name, std::vector<dou
         midpoints.push_back(midpoint);
         sizes.push_back(size);
 
-        regions_coos.push_back({deletion->start-config.max_is, deletion->start});
-        regions_coos.push_back({midpoint-config.max_is, midpoint});
+        regions_coos.push_back({std::max(hts_pos_t(1), deletion->start-config.max_is), deletion->start});
+        regions_coos.push_back({std::max(hts_pos_t(1), midpoint-config.max_is), midpoint});
     }
 	std::sort(regions_coos.begin(), regions_coos.end());
     for (auto coos : regions_coos) {
@@ -725,7 +731,7 @@ void calculate_confidence_interval_size(std::string contig_name, std::vector<dou
 
 				// compute depth base by base in the imprecise deleted regions
 				// TODO: there are some faster data structures out there for this - e.g., Fenwick tree
-				hts_pos_t range_start = del->start - config.read_len, range_end = del->end + config.read_len;
+				hts_pos_t range_start = std::max(hts_pos_t(1), del->start-config.read_len), range_end = del->end + config.read_len;
 				if (est_size > range_end-range_start || est_size < config.min_sv_size) continue; // estimated size is grossly off - ignore
 
 				std::vector<int> depth_by_base(range_end-range_start+1);
@@ -946,7 +952,7 @@ void calculate_ptn_ratio(std::string contig_name, std::vector<deletion_t*>& dele
 		midpoints.push_back(midpoint);
 
 		std::stringstream ss;
-		ss << contig_name << ":" << midpoint-config.max_is << "-" << midpoint;
+		ss << contig_name << ":" << std::max(hts_pos_t(1), midpoint-config.max_is) << "-" << midpoint;
 		char* region = new char[ss.str().length()+1];
 		strcpy(region, ss.str().c_str());
 		mid_regions.push_back(region);

@@ -120,19 +120,49 @@ int64_t get_mq(bam1_t* r) {
     return bam_aux2i(mq);
 }
 
+void rc(std::string& read) {
+    int len = read.length();
+    for (int i = 0; i < len/2; i++) {
+        std::swap(read[i], read[len-i-1]);
+    }
+    for (int i = 0; i < len; i++) {
+		char c = std::toupper(read[i]);
+		if (c == 'A') read[i] = 'T';
+		else if (c == 'C') read[i] = 'G';
+		else if (c == 'G') read[i] = 'C';
+		else if (c == 'T') read[i] = 'A';
+		else c = 'N';
+	}
+}
+void rc(char* read) {
+    int len = strlen(read);
+    for (int i = 0; i < len/2; i++) {
+        std::swap(read[i], read[len-i-1]);
+    }
+    for (int i = 0; i < len; i++) {
+    	char c = std::toupper(read[i]);
+        if (c == 'A') read[i] = 'T';
+        else if (c == 'C') read[i] = 'G';
+        else if (c == 'G') read[i] = 'C';
+        else if (c == 'T') read[i] = 'A';
+        else c = 'N';
+    }
+}
+
 char get_base(const uint8_t* seq, int i) {
     char nucl2chr[16];
     nucl2chr[1] = 'A'; nucl2chr[2] = 'C'; nucl2chr[4] = 'G'; nucl2chr[8] = 'T'; nucl2chr[15] = 'N';
     return nucl2chr[bam_seqi(seq, i)];
 }
 
-std::string get_sequence(bam1_t* r) {
+std::string get_sequence(bam1_t* r, bool fastq_seq = false) {
     char seq[100000];
     const uint8_t* bam_seq = bam_get_seq(r);
     for (int i = 0; i < r->core.l_qseq; i++) {
         seq[i] = get_base(bam_seq, i);
     }
     seq[r->core.l_qseq] = '\0';
+    if (fastq_seq && bam_is_rev(r)) rc(seq);
     return std::string(seq);
 }
 
@@ -203,7 +233,6 @@ std::pair<int, int> get_mismatches_suffix(bam1_t* read, int prefix_len) {
         if (opchr != 'D') {
             prefix_len -= oplen;
         }
-
     }
 
     prefix_len = original_prefix_len;
@@ -359,5 +388,47 @@ struct bam_redux_t {
         return ss.str();
     }
 };
+
+std::string get_sv_type(bcf_hdr_t* hdr, bcf1_t* sv) {
+    char* data = NULL;
+    int len = 0;
+    if (bcf_get_info_string(hdr, sv, "SVTYPE", &data, &len) < 0) {
+        throw std::runtime_error("Failed to determine SVTYPE for sv " + std::string(sv->d.id));
+    }
+    std::string svtype = data;
+    delete[] data;
+    return svtype;
+}
+
+int get_sv_end(bcf_hdr_t* hdr, bcf1_t* sv) {
+    int* data = NULL;
+    int size = 0;
+    bcf_get_info_int32(hdr, sv, "END", &data, &size);
+    if (size > 0) {
+        int end = data[0];
+        delete[] data;
+        return end-1; // return 0-based
+    }
+
+    bcf_get_info_int32(hdr, sv, "SVLEN", &data, &size);
+    if (size > 0) {
+        int svlen = data[0];
+        delete[] data;
+        return sv->pos + abs(svlen);
+    }
+
+    throw std::runtime_error("SV " + std::string(sv->d.id) + "has no END or SVLEN annotation.");
+}
+
+std::string get_sv_info_str(bcf_hdr_t* hdr, bcf1_t* sv, std::string info) {
+    char* data = NULL;
+    int len = 0;
+    if (bcf_get_info_string(hdr, sv, info.c_str(), &data, &len) < 0) {
+        throw std::runtime_error("Failed to fetch " + info + " for sv " + std::string(sv->d.id));
+    }
+    std::string svtype = data;
+    delete[] data;
+    return svtype;
+}
 
 #endif //SURVINDEL2_SAM_UTILS_H

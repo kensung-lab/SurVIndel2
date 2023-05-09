@@ -5,6 +5,7 @@
 #include <htslib/sam.h>
 #include <htslib/vcf.h>
 
+#include "sam_utils.h"
 #include "utils.h"
 
 void merge_hsr_sr_with_1sr_rc(bcf_hdr_t* hdr, bcf1_t* hsr_b, bcf1_t* sr_b, bool is_sr_rc) {
