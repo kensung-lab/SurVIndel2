@@ -46,12 +46,13 @@ struct cluster_t {
 
 	cluster_t() : la_start(0), la_end(0), ra_start(0), ra_end(0), max_mapq(0) {}
 	cluster_t(bam1_t* read) : la_start(read->core.pos), la_end(bam_endpos(read)), ra_start(read->core.mpos), ra_end(get_mate_endpos(read)),
-			max_mapq(std::max(read->core.qual, (uint8_t) get_mq(read))) {
+			max_mapq(std::min(read->core.qual, (uint8_t) get_mq(read))) {
 		la_end_clipped = is_right_clipped(read, config.min_clip_len);
 		ra_start_clipped = is_mate_left_clipped(read, config.min_clip_len);
 		rightmost_lseq = get_sequence(read);
 		leftmost_rseq = bam_get_qname(read);
 		type = read->core.isize < 0 ? OUTWARD_PAIR : LONG_PAIR;
+//		reads.push_back(bam_get_qname(read));
 	}
 };
 bool operator < (const cluster_t& c1, const cluster_t& c2) {
@@ -214,10 +215,11 @@ void cluster_dps(int id, int contig_id, std::string contig_name) {
 
 	std::vector<deletion_t*> deletions;
 	for (cluster_t* c : lp_clusters) {
-		if (c->used || c->count < min_cluster_size || c->max_mapq != 60) continue;
+		if (c->used || c->count < min_cluster_size || c->max_mapq < 0) continue; //config.high_confidence_mapq) continue;
 
 		if (c->la_end < c->ra_start) {
 			deletion_t* del = new deletion_t(c->la_end, c->ra_start, c->la_start, c->ra_end, NULL, NULL, 0, 0, "DP", "");
+			del->disc_pairs_maxmapq = c->max_mapq;
 			set_indel_info(del, c);
 			deletions.push_back(del);
 		}
@@ -225,7 +227,7 @@ void cluster_dps(int id, int contig_id, std::string contig_name) {
 
 	std::vector<duplication_t*> duplications;
 	for (cluster_t* c : ow_clusters) {
-		if (c->used || c->count < min_cluster_size || c->max_mapq != 60) continue;
+		if (c->used || c->count < min_cluster_size || c->max_mapq < 0) continue; //config.high_confidence_mapq) continue;
 
 		if (c->la_end > c->ra_start) {
 			duplication_t* dup = new duplication_t(c->ra_start, c->la_end, c->la_start, c->ra_end, NULL, NULL, "DP", "");
@@ -336,14 +338,16 @@ void merge_sr_dp(int id, int contig_id, std::string contig_name, bcf_hdr_t* sr_h
 			std::string full_junction_seq = del->rightmost_rightfacing_seq + del->leftmost_leftfacing_seq.substr(del->overlap);
 
 			hts_pos_t ref_lh_start = del->rc_anchor_start, ref_lh_end = del->start + full_junction_seq.length();
+			hts_pos_t ref_lh_len = ref_lh_end - ref_lh_start;
 
 			hts_pos_t ref_rh_start = del->end - full_junction_seq.length(), ref_rh_end = del->lc_anchor_end;
+			hts_pos_t ref_rh_len = ref_rh_end - ref_rh_start;
 
 			if (has_Ns(chr_seqs.get_seq(contig_name), ref_lh_start, ref_lh_end-ref_lh_start)) continue;
 			if (has_Ns(chr_seqs.get_seq(contig_name), ref_rh_start, ref_rh_end-ref_rh_start)) continue;
 
-			indel_t* indel = remap_consensus(full_junction_seq, chr_seqs.get_seq(contig_name), ref_lh_start, ref_lh_end-ref_lh_start, ref_rh_start,
-					ref_rh_end-ref_rh_start, aligner, NULL, NULL, "DP");
+			indel_t* indel = remap_consensus(full_junction_seq, chr_seqs.get_seq(contig_name), chr_seqs.get_len(contig_name),
+					ref_lh_start, ref_lh_len, ref_rh_start, ref_rh_len, aligner, NULL, NULL, "DP");
 			if (indel == NULL || indel->indel_type() != "DEL" || indel->len() == 0) {
 				deletions[i] = NULL;
 				continue;
@@ -353,6 +357,7 @@ void merge_sr_dp(int id, int contig_id, std::string contig_name, bcf_hdr_t* sr_h
 			indel->disc_pairs = del->disc_pairs;
 			indel->overlap = del->overlap;
 			indel->mismatches = del->mismatches;
+			indel->disc_pairs_maxmapq = del->disc_pairs_maxmapq;
 			deletions[i]->original_range = std::to_string(del->start) + "-" + std::to_string(del->end);
 			deletions[i]->remapped = true;
 		}

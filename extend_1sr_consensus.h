@@ -4,6 +4,7 @@
 #include <chrono>
 #include <unordered_map>
 #include <queue>
+#include <stack>
 #include "utils.h"
 
 struct edge_t {
@@ -36,6 +37,35 @@ std::vector<bool> find_vertices_in_cycles(std::vector<std::vector<edge_t> >& l_a
 	std::vector<bool> in_cycle(n);
 	for (int i = 0; i < n; i++) {
 		in_cycle[i] = (dist[i][i] != INF);
+	}
+	return in_cycle;
+}
+
+std::vector<bool> find_vertices_in_cycles_fast(std::vector<std::vector<edge_t> >& l_adj) {
+
+	int n = l_adj.size();
+	std::vector<bool> in_cycle(n);
+	for (int i = 0; i < n; i++) {
+		// check if node i can reach itself - i.e., it is part of a cycle
+		std::stack<int> s;
+		for (edge_t& e : l_adj[i]) {
+			s.push(e.next);
+		}
+
+		std::vector<bool> visited(n, false);
+		bool i_in_cycle = false;
+		while (!i_in_cycle && !s.empty()) {
+			int curr = s.top();
+			s.pop();
+			if (visited[curr]) continue;
+			visited[curr] = true;
+
+			if (curr == i) i_in_cycle = true;
+			for (edge_t& e : l_adj[curr]) {
+				s.push(e.next);
+			}
+		}
+		in_cycle[i] = i_in_cycle;
 	}
 	return in_cycle;
 }
@@ -172,7 +202,7 @@ void get_extension_reads(std::string contig_name, hts_pos_t target_start, hts_po
 	hts_pos_t end = std::max(target_end, std::max(fwd_mates_end, rev_mates_end));
 
 	std::stringstream ss;
-	ss << contig_name << ":" << start << "-" << end;
+	ss << contig_name << ":" << std::max(hts_pos_t(1), start) << "-" << end;
 
 	hts_itr_t* iter = sam_itr_querys(bam_file->idx, bam_file->header, ss.str().c_str());
 
@@ -244,50 +274,54 @@ void extend_consensus_to_right(consensus_t* consensus, hts_pos_t target_start, h
 	build_graph_fwd(read_seqs, out_edges, l_adj, l_adj_rev, kmer_to_idx, config.read_len/2);
 
 	std::vector<int> rev_topological_order = find_rev_topological_order(n, out_edges, l_adj_rev);
-	bool cycle_at_0 = true;
+	bool cycle_at_0 = std::find(rev_topological_order.begin(), rev_topological_order.end(), 0) == rev_topological_order.end();
+	if (cycle_at_0) {
+		std::vector<bool> in_cycle = find_vertices_in_cycles_fast(l_adj);
+		for (int i = 0; i < n; i++) {
+			if (in_cycle[i]) {
+				l_adj[i].clear();
+				out_edges[i] = 0;
+			}
+			l_adj_rev[i].erase(
+				std::remove_if(l_adj_rev[i].begin(), l_adj_rev[i].end(), [&in_cycle](edge_t& e) {return in_cycle[e.next];}),
+				l_adj_rev[i].end()
+			);
+		}
+		rev_topological_order = find_rev_topological_order(n, out_edges, l_adj_rev);
+	}
+
+	std::vector<int> best_scores(n);
+	std::vector<edge_t> best_edges(n);
 	for (int i : rev_topological_order) {
-		if (i == 0) {
-			cycle_at_0 = false;
-			break;
+		for (edge_t& e : l_adj_rev[i]) {
+			if (best_scores[e.next] < e.score + best_scores[i]) {
+				best_scores[e.next] = e.score + best_scores[i];
+				best_edges[e.next] = {i, e.score, e.overlap};
+			}
 		}
 	}
 
-	if (!cycle_at_0) {
-		std::vector<int> best_scores(n);
-		std::vector<edge_t> best_edges(n);
-		for (int i : rev_topological_order) {
-			for (edge_t& e : l_adj_rev[i]) {
-				if (best_scores[e.next] < e.score + best_scores[i]) {
-					best_scores[e.next] = e.score + best_scores[i];
-					best_edges[e.next] = {i, e.score, e.overlap};
-				}
-			}
-		}
+	// 0 is the consensus, we start from there
+	edge_t e = best_edges[0];
+	std::string ext_consensus = consensus->consensus;
+	while (e.overlap) {
+		ext_consensus += read_seqs[e.next].substr(e.overlap);
+		e = best_edges[e.next];
+		consensus->right_ext_reads++;
+		if (read_mapqs[e.next] >= config.high_confidence_mapq) consensus->hq_right_ext_reads++;
+	}
 
-		// 0 is the consensus, we start from there
-		edge_t e = best_edges[0];
-		std::string ext_consensus = consensus->consensus;
-		while (e.overlap) {
-			ext_consensus += read_seqs[e.next].substr(e.overlap);
-			e = best_edges[e.next];
-			consensus->right_ext_reads++;
-			if (read_mapqs[e.next] >= config.high_confidence_mapq) consensus->hq_right_ext_reads++;
+	if (!consensus->left_clipped) {
+		if (consensus->clip_len != consensus_t::UNKNOWN_CLIP_LEN) {
+			consensus->clip_len += ext_consensus.length() - consensus->consensus.length();
 		}
-
-		if (!consensus->left_clipped) {
-			if (consensus->clip_len != consensus_t::UNKNOWN_CLIP_LEN) {
-				consensus->clip_len += ext_consensus.length() - consensus->consensus.length();
-			}
-		} else {
-			consensus->end += ext_consensus.length() - consensus->consensus.length();
-			if (consensus->max_mapq < config.high_confidence_mapq && consensus->hq_right_ext_reads >= 3) {
-				consensus->max_mapq = config.high_confidence_mapq;
-			}
-		}
-		consensus->consensus = ext_consensus;
 	} else {
-		consensus->right_ext_reads = -1;
+		consensus->end += ext_consensus.length() - consensus->consensus.length();
+		if (consensus->max_mapq < config.high_confidence_mapq && consensus->hq_right_ext_reads >= 3) {
+			consensus->max_mapq = config.high_confidence_mapq;
+		}
 	}
+	consensus->consensus = ext_consensus;
 }
 
 void extend_rc_consensus(consensus_t* consensus, std::string contig_name, hts_pos_t contig_len, config_t config, open_samFile_t* bam_file,
@@ -345,70 +379,54 @@ void extend_consensus_to_left(consensus_t* consensus, hts_pos_t target_start, ht
 	build_graph_rev(read_seqs, out_edges, l_adj, l_adj_rev, kmer_to_idx, config.read_len/2);
 
 	std::vector<int> rev_topological_order = find_rev_topological_order(n, out_edges, l_adj_rev);
-	bool cycle_at_0 = true;
+
+	bool cycle_at_0 = std::find(rev_topological_order.begin(), rev_topological_order.end(), 0) == rev_topological_order.end();
+	if (cycle_at_0) {
+		std::vector<bool> in_cycle = find_vertices_in_cycles_fast(l_adj);
+		for (int i = 0; i < n; i++) {
+			if (in_cycle[i]) {
+				l_adj[i].clear();
+				out_edges[i] = 0;
+			}
+			l_adj_rev[i].erase(
+				std::remove_if(l_adj_rev[i].begin(), l_adj_rev[i].end(), [&in_cycle](edge_t& e) {return in_cycle[e.next];}),
+				l_adj_rev[i].end()
+			);
+		}
+		rev_topological_order = find_rev_topological_order(n, out_edges, l_adj_rev);
+	}
+
+	std::vector<int> best_scores(n);
+	std::vector<edge_t> best_edges(n);
 	for (int i : rev_topological_order) {
-		if (i == 0) {
-			cycle_at_0 = false;
-			break;
+		for (edge_t& e : l_adj_rev[i]) {
+			if (best_scores[e.next] < e.score + best_scores[i]) {
+				best_scores[e.next] = e.score + best_scores[i];
+				best_edges[e.next] = {i, e.score, e.overlap};
+			}
 		}
 	}
 
-//	if (cycle_at_0) {
-//		std::vector<bool> in_cycle = find_vertices_in_cycles(l_adj);
-//		for (int i = 0; i < n; i++) {
-//			if (in_cycle[i]) {
-//				l_adj[i].clear();
-//			}
-//			l_adj_rev[i].erase(
-//				std::remove_if(l_adj_rev[i].begin(), l_adj_rev[i].end(), [&in_cycle](edge_t& e) {return in_cycle[e.next];}),
-//				l_adj_rev[i].end()
-//			);
-//		}
-//		rev_topological_order = find_rev_topological_order(n, out_edges, l_adj_rev);
-//		cycle_at_0 = true;
-//		for (int i : rev_topological_order) {
-//			if (i == 0) {
-//				cycle_at_0 = false;
-//				break;
-//			}
-//		}
-//	}
+	// 0 is the consensus, we start from there
+	edge_t e = best_edges[0];
+	std::string ext_consensus = consensus->consensus;
+	while (e.overlap) {
+		ext_consensus = read_seqs[e.next].substr(0, read_seqs[e.next].length()-e.overlap) + ext_consensus;
+		e = best_edges[e.next];
+		consensus->left_ext_reads++;
+		if (read_mapqs[e.next] >= config.high_confidence_mapq) consensus->hq_left_ext_reads++;
+	}
 
-	if (!cycle_at_0) {
-		std::vector<int> best_scores(n);
-		std::vector<edge_t> best_edges(n);
-		for (int i : rev_topological_order) {
-			for (edge_t& e : l_adj_rev[i]) {
-				if (best_scores[e.next] < e.score + best_scores[i]) {
-					best_scores[e.next] = e.score + best_scores[i];
-					best_edges[e.next] = {i, e.score, e.overlap};
-				}
-			}
+	if (consensus->left_clipped) {
+		if (consensus->clip_len != consensus_t::UNKNOWN_CLIP_LEN) {
+			consensus->clip_len += ext_consensus.length() - consensus->consensus.length();
 		}
-
-		// 0 is the consensus, we start from there
-		edge_t e = best_edges[0];
-		std::string ext_consensus = consensus->consensus;
-		while (e.overlap) {
-			ext_consensus = read_seqs[e.next].substr(0, read_seqs[e.next].length()-e.overlap) + ext_consensus;
-			e = best_edges[e.next];
-			consensus->left_ext_reads++;
-			if (read_mapqs[e.next] >= config.high_confidence_mapq) consensus->hq_left_ext_reads++;
-		}
-
-		if (consensus->left_clipped) {
-			if (consensus->clip_len != consensus_t::UNKNOWN_CLIP_LEN) {
-				consensus->clip_len += ext_consensus.length() - consensus->consensus.length();
-			}
-		} else {
-			consensus->start -= ext_consensus.length() - consensus->consensus.length();
-			if (consensus->max_mapq < config.high_confidence_mapq && consensus->hq_left_ext_reads >= 3)
-				consensus->max_mapq = config.high_confidence_mapq;
-		}
-		consensus->consensus = ext_consensus;
 	} else {
-		consensus->left_ext_reads = -1;
+		consensus->start -= ext_consensus.length() - consensus->consensus.length();
+		if (consensus->max_mapq < config.high_confidence_mapq && consensus->hq_left_ext_reads >= 3)
+			consensus->max_mapq = config.high_confidence_mapq;
 	}
+	consensus->consensus = ext_consensus;
 }
 
 

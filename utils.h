@@ -50,33 +50,24 @@ struct consensus_t {
     int anchor_len() { return consensus.length() - clip_len; }
 };
 
-std::atomic<int> _indel_id;
-struct sr_remap_info_t {
-	hts_pos_t remapped_bp; // breakpoint that was found by remapping the clip
-	hts_pos_t remapped_other_end;
-	int weak_supporting_reads = 0, strong_supporting_reads = 0, perfect_supporting_reads = 0, tried_reads = 0;
-
-	sr_remap_info_t(hts_pos_t remapped_bp, hts_pos_t remapped_other_end) : remapped_bp(remapped_bp), remapped_other_end(remapped_other_end) {}
-};
 struct indel_t {
     std::string id;
     hts_pos_t start, end;
     hts_pos_t rc_anchor_start, lc_anchor_end; // start of the rc anchor and lc anchor end
-    int disc_pairs = 0;
+    int disc_pairs = 0, disc_pairs_maxmapq = 0;
     consensus_t* lc_consensus,* rc_consensus;
     double mm_rate = 0.0;
     std::string source;
     int left_flanking_cov = 0, indel_left_cov = 0, indel_right_cov = 0, right_flanking_cov = 0;
     int med_left_flanking_cov = 0, med_indel_left_cov = 0, med_indel_right_cov = 0, med_right_flanking_cov = 0;
     int med_left_cluster_cov = 0, med_right_cluster_cov = 0;
-    int full_junction_score = 0, split_junction_score = 0;
+    int full_junction_score = 0, lh_best1_junction_score = 0, rh_best1_junction_score = 0,
+    	lh_best2_junction_score = 0, rh_best2_junction_score = 0;
     std::string extra_info;
     int overlap = 0, mismatches = 0;
     bool remapped = false;
     std::string rightmost_rightfacing_seq, leftmost_leftfacing_seq;
     std::string ins_seq;
-
-    sr_remap_info_t* sr_remap_info = NULL;
 
     indel_t(hts_pos_t start, hts_pos_t end, hts_pos_t rc_anchor_start, hts_pos_t lc_anchor_end, std::string source,
             consensus_t* lc_consensus, consensus_t* rc_consensus, std::string ins_seq)
@@ -89,7 +80,7 @@ struct indel_t {
     	return contig_name + ":" + std::to_string(start) + "-" + std::to_string(end);
     }
 
-    bool is_single_consensus() { return lc_consensus == NULL || rc_consensus == NULL; }
+    bool is_single_consensus() { return (lc_consensus == NULL || rc_consensus == NULL) && lc_consensus != rc_consensus; }
     bool imprecise() { return lc_consensus == NULL && rc_consensus == NULL && remapped == false; }
 };
 
@@ -482,6 +473,9 @@ bcf_hdr_t* generate_vcf_header(chr_seqs_map_t& contigs, std::string& sample_name
 	int len;
 
 	// add FILTER tags
+	const char* small_flt_tag = "##FILTER=<ID=SMALL,Description=\"Event is smaller than what required by the user.\">";
+	bcf_hdr_add_hrec(header, bcf_hdr_parse_line(header, small_flt_tag, &len));
+
 	const char* size_flt_tag = "##FILTER=<ID=SIZE_FILTER,Description=\"Size of the event is outside the predicted confidence interval.\">";
 	bcf_hdr_add_hrec(header, bcf_hdr_parse_line(header, size_flt_tag, &len));
 
@@ -572,17 +566,11 @@ bcf_hdr_t* generate_vcf_header(chr_seqs_map_t& contigs, std::string& sample_name
 	const char* clipped_reads_tag = "##INFO=<ID=CLIPPED_READS,Number=2,Type=Integer,Description=\"Reads supporting the right and the left breakpoints, respectively.\">";
 	bcf_hdr_add_hrec(header, bcf_hdr_parse_line(header, clipped_reads_tag, &len));
 
-	const char* max_mapq_tag = "##INFO=<ID=MAX_MAPQ,Number=2,Type=Integer,Description=\"Maximum MAPQ of a supporting clipped read.\">";
+	const char* max_mapq_tag = "##INFO=<ID=MAX_MAPQ,Number=2,Type=Integer,Description=\"Maximum MAPQ of clipped reads.\">";
 	bcf_hdr_add_hrec(header, bcf_hdr_parse_line(header, max_mapq_tag, &len));
 
-	const char* weak_support_reads_tag = "##INFO=<ID=WEAK_SUPPORTING_1SR_READS,Number=1,Type=Integer,Description=\"Reads supporting the 1SR remapping.\">";
-	bcf_hdr_add_hrec(header, bcf_hdr_parse_line(header, weak_support_reads_tag, &len));
-
-	const char* strong_support_reads_tag = "##INFO=<ID=STRONG_SUPPORTING_1SR_READS,Number=1,Type=Integer,Description=\"Reads strongly supporting the 1SR remapping.\">";
-	bcf_hdr_add_hrec(header, bcf_hdr_parse_line(header, strong_support_reads_tag, &len));
-
-	const char* perfect_support_reads_tag = "##INFO=<ID=PERFECT_SUPPORTING_1SR_READS,Number=1,Type=Integer,Description=\"Reads perfectly supporting the 1SR remapping.\">";
-	bcf_hdr_add_hrec(header, bcf_hdr_parse_line(header, perfect_support_reads_tag, &len));
+	const char* dp_max_mapq_tag = "##INFO=<ID=DISC_PAIRS_MAXMAPQ,Number=1,Type=Integer,Description=\"Maximum MAPQ of supporting discordant pairs.\">";
+	bcf_hdr_add_hrec(header, bcf_hdr_parse_line(header, dp_max_mapq_tag, &len));
 
 	const char* ext_1sr_reads_tag = "##INFO=<ID=EXT_1SR_READS,Number=2,Type=Integer,Description=\"Reads extending a 1SR consensus to the left and to the right.\">";
 	bcf_hdr_add_hrec(header, bcf_hdr_parse_line(header, ext_1sr_reads_tag, &len));
@@ -596,8 +584,11 @@ bcf_hdr_t* generate_vcf_header(chr_seqs_map_t& contigs, std::string& sample_name
 	const char* fullj_score_tag = "##INFO=<ID=FULL_JUNCTION_SCORE,Number=1,Type=Integer,Description=\"Full junction score.\">";
 	bcf_hdr_add_hrec(header, bcf_hdr_parse_line(header, fullj_score_tag, &len));
 
-	const char* splitj_score_tag = "##INFO=<ID=SPLIT_JUNCTION_SCORE,Number=1,Type=Integer,Description=\"Split junction score.\">";
+	const char* splitj_score_tag = "##INFO=<ID=SPLIT_JUNCTION_SCORE,Number=2,Type=Integer,Description=\"Score of the best alignment of the left-half and right-half of the junction.\">";
 	bcf_hdr_add_hrec(header, bcf_hdr_parse_line(header, splitj_score_tag, &len));
+
+	const char* splitj_score2_tag = "##INFO=<ID=SPLIT_JUNCTION_SCORE2,Number=2,Type=Integer,Description=\"Score of the second best alignment of the left-half and right-half of the junction.\">";
+	bcf_hdr_add_hrec(header, bcf_hdr_parse_line(header, splitj_score2_tag, &len));
 
 	const char* source_tag = "##INFO=<ID=SOURCE,Number=1,Type=String,Description=\"Source algorithm of the indel.\">";
 	bcf_hdr_add_hrec(header, bcf_hdr_parse_line(header, source_tag, &len));
@@ -617,6 +608,9 @@ bcf_hdr_t* generate_vcf_header(chr_seqs_map_t& contigs, std::string& sample_name
 
 	const char* og_range_tag = "##INFO=<ID=ORIGINAL_RANGE,Number=1,Type=String,Description=\"Unadjusted imprecise range predicted by discordant pairs. \">";
 	bcf_hdr_add_hrec(header, bcf_hdr_parse_line(header, og_range_tag, &len));
+
+	const char* sr_consensus_seq_tag = "##INFO=<ID=SR_CONSENSUS_SEQ,Number=1,Type=String,Description=\".\">";
+	bcf_hdr_add_hrec(header, bcf_hdr_parse_line(header, sr_consensus_seq_tag, &len));
 
 //	// TODO: this is "debugging" information, remove when done
 	const char* extrainfo_tag = "##INFO=<ID=EXTRA_INFO,Number=.,Type=String,Description=\"Extra information.\">";
@@ -703,6 +697,9 @@ void del2bcf(bcf_hdr_t* hdr, bcf1_t* bcf_entry, char* chr_seq, std::string& cont
 	int cluster_depths[] = {del->med_left_cluster_cov, del->med_right_cluster_cov};
 	bcf_update_info_int32(hdr, bcf_entry, "CLUSTER_DEPTHS", cluster_depths, 2);
 	bcf_update_info_int32(hdr, bcf_entry, "DISC_PAIRS", &del->disc_pairs, 1);
+	if (del->disc_pairs > 0) {
+		bcf_update_info_int32(hdr, bcf_entry, "DISC_PAIRS_MAXMAPQ", &del->disc_pairs_maxmapq, 1);
+	}
 	int disc_pairs_surr[] = {del->l_cluster_region_disc_pairs, del->r_cluster_region_disc_pairs};
 	bcf_update_info_int32(hdr, bcf_entry, "DISC_PAIRS_SURROUNDING", disc_pairs_surr, 2);
 	bcf_update_info_int32(hdr, bcf_entry, "CONC_PAIRS", &del->conc_pairs, 1);
@@ -710,24 +707,26 @@ void del2bcf(bcf_hdr_t* hdr, bcf1_t* bcf_entry, char* chr_seq, std::string& cont
 	bcf_update_info_int32(hdr, bcf_entry, "CLIPPED_READS", clipped_reads, 2);
 	int max_mapq[] = {del->rc_consensus ? (int) del->rc_consensus->max_mapq : 0, del->lc_consensus ? (int) del->lc_consensus->max_mapq : 0};
 	bcf_update_info_int32(hdr, bcf_entry, "MAX_MAPQ", max_mapq, 2);
-	if (del->sr_remap_info != NULL) {
-		bcf_update_info_int32(hdr, bcf_entry, "WEAK_SUPPORTING_1SR_READS", &del->sr_remap_info->weak_supporting_reads, 1);
-		bcf_update_info_int32(hdr, bcf_entry, "STRONG_SUPPORTING_1SR_READS", &del->sr_remap_info->strong_supporting_reads, 1);
-		bcf_update_info_int32(hdr, bcf_entry, "PERFECT_SUPPORTING_1SR_READS", &del->sr_remap_info->perfect_supporting_reads, 1);
+	if (del->is_single_consensus()) {
 		if (del->lc_consensus) {
 			int ext_1sr_reads[] = { del->lc_consensus->left_ext_reads, del->lc_consensus->right_ext_reads };
 			bcf_update_info_int32(hdr, bcf_entry, "EXT_1SR_READS", ext_1sr_reads, 2);
 			int hq_ext_1sr_reads[] = { del->lc_consensus->hq_left_ext_reads, del->lc_consensus->hq_right_ext_reads };
 			bcf_update_info_int32(hdr, bcf_entry, "HQ_EXT_1SR_READS", hq_ext_1sr_reads, 2);
+			bcf_update_info_string(hdr, bcf_entry, "SR_CONSENSUS_SEQ", del->lc_consensus->consensus.c_str());
 		} else if (del->rc_consensus) {
 			int ext_1sr_reads[] = { del->rc_consensus->left_ext_reads, del->rc_consensus->right_ext_reads };
 			bcf_update_info_int32(hdr, bcf_entry, "EXT_1SR_READS", ext_1sr_reads, 2);
 			int hq_ext_1sr_reads[] = { del->rc_consensus->hq_left_ext_reads, del->rc_consensus->hq_right_ext_reads };
 			bcf_update_info_int32(hdr, bcf_entry, "HQ_EXT_1SR_READS", hq_ext_1sr_reads, 2);
+			bcf_update_info_string(hdr, bcf_entry, "SR_CONSENSUS_SEQ", del->rc_consensus->consensus.c_str());
 		}
 	}
 	bcf_update_info_int32(hdr, bcf_entry, "FULL_JUNCTION_SCORE", &del->full_junction_score, 1);
-	bcf_update_info_int32(hdr, bcf_entry, "SPLIT_JUNCTION_SCORE", &del->split_junction_score, 1);
+	int split_junction_score[] = {del->lh_best1_junction_score, del->rh_best1_junction_score};
+	bcf_update_info_int32(hdr, bcf_entry, "SPLIT_JUNCTION_SCORE", split_junction_score, 2);
+	int split_junction_score2[] = {del->lh_best2_junction_score, del->rh_best2_junction_score};
+	bcf_update_info_int32(hdr, bcf_entry, "SPLIT_JUNCTION_SCORE2", split_junction_score2, 2);
 	float mm_rate = del->mm_rate;
 	bcf_update_info_float(hdr, bcf_entry, "MM_RATE", &mm_rate, 1);
 	bcf_update_info_string(hdr, bcf_entry, "SOURCE", del->source.c_str());
@@ -790,19 +789,26 @@ void dup2bcf(bcf_hdr_t* hdr, bcf1_t* bcf_entry, char* chr_seq, std::string& cont
 	bcf_update_info_int32(hdr, bcf_entry, "CLIPPED_READS", clipped_reads, 2);
 	int max_mapq[] = {dup->lc_consensus ? (int) dup->lc_consensus->max_mapq : 0, dup->rc_consensus ? (int) dup->rc_consensus->max_mapq : 0};
 	bcf_update_info_int32(hdr, bcf_entry, "MAX_MAPQ", max_mapq, 2);
-	if (dup->sr_remap_info != NULL) {
-		bcf_update_info_int32(hdr, bcf_entry, "WEAK_SUPPORTING_1SR_READS", &dup->sr_remap_info->weak_supporting_reads, 1);
-		bcf_update_info_int32(hdr, bcf_entry, "STRONG_SUPPORTING_1SR_READS", &dup->sr_remap_info->strong_supporting_reads, 1);
-		bcf_update_info_int32(hdr, bcf_entry, "PERFECT_SUPPORTING_1SR_READS", &dup->sr_remap_info->perfect_supporting_reads, 1);
-		int ext_1sr_reads[] = { dup->lc_consensus ? dup->lc_consensus->left_ext_reads : 0,
-								dup->rc_consensus ? dup->rc_consensus->right_ext_reads : 0 };
-		bcf_update_info_int32(hdr, bcf_entry, "EXT_1SR_READS", ext_1sr_reads, 2);
-		int hq_ext_1sr_reads[] = { dup->lc_consensus ? dup->lc_consensus->hq_left_ext_reads : 0,
-								   dup->rc_consensus ? dup->rc_consensus->hq_right_ext_reads : 0 };
-		bcf_update_info_int32(hdr, bcf_entry, "HQ_EXT_1SR_READS", hq_ext_1sr_reads, 2);
+	if (dup->is_single_consensus()) {
+		if (dup->lc_consensus) {
+			int ext_1sr_reads[] = { dup->lc_consensus->left_ext_reads, dup->lc_consensus->right_ext_reads };
+			bcf_update_info_int32(hdr, bcf_entry, "EXT_1SR_READS", ext_1sr_reads, 2);
+			int hq_ext_1sr_reads[] = { dup->lc_consensus->hq_left_ext_reads, dup->lc_consensus->hq_right_ext_reads };
+			bcf_update_info_int32(hdr, bcf_entry, "HQ_EXT_1SR_READS", hq_ext_1sr_reads, 2);
+			bcf_update_info_string(hdr, bcf_entry, "SR_CONSENSUS_SEQ", dup->lc_consensus->consensus.c_str());
+		} else if (dup->rc_consensus) {
+			int ext_1sr_reads[] = { dup->rc_consensus->left_ext_reads, dup->rc_consensus->right_ext_reads };
+			bcf_update_info_int32(hdr, bcf_entry, "EXT_1SR_READS", ext_1sr_reads, 2);
+			int hq_ext_1sr_reads[] = { dup->rc_consensus->hq_left_ext_reads, dup->rc_consensus->hq_right_ext_reads };
+			bcf_update_info_int32(hdr, bcf_entry, "HQ_EXT_1SR_READS", hq_ext_1sr_reads, 2);
+			bcf_update_info_string(hdr, bcf_entry, "SR_CONSENSUS_SEQ", dup->rc_consensus->consensus.c_str());
+		}
 	}
 	bcf_update_info_int32(hdr, bcf_entry, "FULL_JUNCTION_SCORE", &dup->full_junction_score, 1);
-	bcf_update_info_int32(hdr, bcf_entry, "SPLIT_JUNCTION_SCORE", &dup->split_junction_score, 1);
+	int split_junction_score[] = {dup->lh_best1_junction_score, dup->rh_best1_junction_score};
+	bcf_update_info_int32(hdr, bcf_entry, "SPLIT_JUNCTION_SCORE", split_junction_score, 2);
+	int split_junction_score2[] = {dup->lh_best2_junction_score, dup->rh_best2_junction_score};
+	bcf_update_info_int32(hdr, bcf_entry, "SPLIT_JUNCTION_SCORE2", split_junction_score2, 2);
 	bcf_update_info_string(hdr, bcf_entry, "SOURCE", dup->source.c_str());
 
 	if (!dup->ins_seq.empty()) {
