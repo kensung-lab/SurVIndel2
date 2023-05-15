@@ -105,6 +105,8 @@ indel_t* realign_consensuses(std::string contig_name, consensus_t* rc_consensus,
 	}
 	indel_t* indel = remap_consensus(joined_consensus, chr_seq, chr_len, ref_lh_start, ref_lh_len, ref_rh_start, ref_rh_len, aligner,
 			lc_consensus, rc_consensus, source);
+	ref_lh_end = ref_lh_start + ref_lh_len;
+	ref_rh_end = ref_rh_start + ref_rh_len;
 	if (indel == NULL) return NULL;
 
 	char ref_with_del[100000];
