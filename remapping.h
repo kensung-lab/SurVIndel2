@@ -113,8 +113,11 @@ indel_t* remap_consensus(std::string& consensus_seq, char* reference, int refere
 		indel = new deletion_t(start, end, la_start, ra_end, lc_consensus, rc_consensus, lh_aln.sw_score, rh_aln.sw_score, source, ins_seq);
 	} else {
 		int overlap_len = start - end;
-		int lh_suffix_score = find_aln_suffix_score(lh_aln.cigar, overlap_len, 1, -4, -6, -1);
-		int rh_prefix_score = find_aln_prefix_score(rh_aln.cigar, overlap_len, 1, -4, -6, -1);
+		std::stringstream ss;
+		std::pair<int, int> lh_suffix_score_and_qlen = find_aln_suffix_score(lh_aln.cigar, overlap_len, 1, -4, -6, -1);
+		int lh_suffix_score = lh_suffix_score_and_qlen.first, lh_suffix_qlen = lh_suffix_score_and_qlen.second;
+		std::pair<int, int> rh_prefix_score_and_qlen = find_aln_prefix_score(rh_aln.cigar, overlap_len, 1, -4, -6, -1);
+		int rh_prefix_score = rh_prefix_score_and_qlen.first, rh_prefix_qlen = rh_prefix_score_and_qlen.second;
 		if (ra_end-start < config.min_clip_len || end-la_start < config.min_clip_len ||
 				(lh_suffix_score == overlap_len && rh_prefix_score == overlap_len)) { // perfect dup
 			std::string ins_seq = consensus_seq.substr(split_i, get_left_clip_size(rh_aln));
@@ -122,11 +125,11 @@ indel_t* remap_consensus(std::string& consensus_seq, char* reference, int refere
 			indel = new duplication_t(end, start, la_start, ra_end, lc_consensus, rc_consensus, source, ins_seq);
 		} else { // insertion
 			if (lh_suffix_score <= rh_prefix_score) {
-				std::string ins_seq = consensus_seq.substr(split_i-overlap_len, overlap_len);
+				std::string ins_seq = consensus_seq.substr(split_i-lh_suffix_qlen, lh_suffix_qlen);
 				ins_seq += consensus_seq.substr(split_i, get_left_clip_size(rh_aln));
 				indel = new duplication_t(end, end, la_start, ra_end, lc_consensus, rc_consensus, source, ins_seq);
 			} else {
-				int ins_seq_len = overlap_len + get_left_clip_size(rh_aln);
+				int ins_seq_len = rh_prefix_qlen + get_left_clip_size(rh_aln);
 				std::string ins_seq = consensus_seq.substr(split_i, ins_seq_len);
 				indel = new duplication_t(start, start, la_start, ra_end, lc_consensus, rc_consensus, source, ins_seq);
 			}
@@ -135,6 +138,7 @@ indel_t* remap_consensus(std::string& consensus_seq, char* reference, int refere
 	indel->full_junction_score = std::max(lh_full_aln.sw_score, rh_full_aln.sw_score);
 	indel->lh_best1_junction_score = lh_aln.sw_score, indel->rh_best1_junction_score = rh_aln.sw_score;
 	indel->lh_best2_junction_score = lh_aln.sw_score_next_best, indel->rh_best2_junction_score = rh_aln.sw_score_next_best;
+	indel->lh_junction_size = split_i, indel->rh_junction_size = consensus_seq.size()-split_i;
 	if (rc_consensus && rc_consensus->clip_len == consensus_t::UNKNOWN_CLIP_LEN) {
 		rc_consensus->clip_len = consensus_seq.length() - split_i;
 	}

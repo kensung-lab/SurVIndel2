@@ -63,6 +63,7 @@ struct indel_t {
     int med_left_cluster_cov = 0, med_right_cluster_cov = 0;
     int full_junction_score = 0, lh_best1_junction_score = 0, rh_best1_junction_score = 0,
     	lh_best2_junction_score = 0, rh_best2_junction_score = 0;
+    int lh_junction_size = 0, rh_junction_size = 0;
     std::string extra_info;
     int overlap = 0, mismatches = 0;
     bool remapped = false;
@@ -590,6 +591,9 @@ bcf_hdr_t* generate_vcf_header(chr_seqs_map_t& contigs, std::string& sample_name
 	const char* splitj_score2_tag = "##INFO=<ID=SPLIT_JUNCTION_SCORE2,Number=2,Type=Integer,Description=\"Score of the second best alignment of the left-half and right-half of the junction.\">";
 	bcf_hdr_add_hrec(header, bcf_hdr_parse_line(header, splitj_score2_tag, &len));
 
+	const char* splitj_size_tag = "##INFO=<ID=SPLIT_JUNCTION_SIZE,Number=2,Type=Integer,Description=\"Size of the the left-half and right-half of the junction.\">";
+	bcf_hdr_add_hrec(header, bcf_hdr_parse_line(header, splitj_size_tag, &len));
+
 	const char* source_tag = "##INFO=<ID=SOURCE,Number=1,Type=String,Description=\"Source algorithm of the indel.\">";
 	bcf_hdr_add_hrec(header, bcf_hdr_parse_line(header, source_tag, &len));
 
@@ -727,6 +731,8 @@ void del2bcf(bcf_hdr_t* hdr, bcf1_t* bcf_entry, char* chr_seq, std::string& cont
 	bcf_update_info_int32(hdr, bcf_entry, "SPLIT_JUNCTION_SCORE", split_junction_score, 2);
 	int split_junction_score2[] = {del->lh_best2_junction_score, del->rh_best2_junction_score};
 	bcf_update_info_int32(hdr, bcf_entry, "SPLIT_JUNCTION_SCORE2", split_junction_score2, 2);
+	int split_junction_size[] = {del->lh_junction_size, del->rh_junction_size};
+	bcf_update_info_int32(hdr, bcf_entry, "SPLIT_JUNCTION_SIZE", split_junction_size, 2);
 	float mm_rate = del->mm_rate;
 	bcf_update_info_float(hdr, bcf_entry, "MM_RATE", &mm_rate, 1);
 	bcf_update_info_string(hdr, bcf_entry, "SOURCE", del->source.c_str());
@@ -809,6 +815,8 @@ void dup2bcf(bcf_hdr_t* hdr, bcf1_t* bcf_entry, char* chr_seq, std::string& cont
 	bcf_update_info_int32(hdr, bcf_entry, "SPLIT_JUNCTION_SCORE", split_junction_score, 2);
 	int split_junction_score2[] = {dup->lh_best2_junction_score, dup->rh_best2_junction_score};
 	bcf_update_info_int32(hdr, bcf_entry, "SPLIT_JUNCTION_SCORE2", split_junction_score2, 2);
+	int split_junction_size[] = {dup->lh_junction_size, dup->rh_junction_size};
+	bcf_update_info_int32(hdr, bcf_entry, "SPLIT_JUNCTION_SIZE", split_junction_size, 2);
 	bcf_update_info_string(hdr, bcf_entry, "SOURCE", dup->source.c_str());
 
 	if (!dup->ins_seq.empty()) {
@@ -903,32 +911,38 @@ bool is_clipped(StripedSmithWaterman::Alignment& aln, int min_clip_len = 1) {
 	return is_left_clipped(aln, min_clip_len) || is_right_clipped(aln, min_clip_len);
 }
 
-int find_aln_prefix_score(std::vector<uint32_t> cigar, int prefix_len, int match_score, int mismatch_score, 
+std::pair<int, int> find_aln_prefix_score(std::vector<uint32_t> cigar, int ref_prefix_len, int match_score, int mismatch_score,
 						  int gap_open_score, int gap_extend_score) {
-	int score = 0;
-	for (int i = 0, j = 0; i < cigar.size() && j < prefix_len; i++) {
+	int score = 0, query_prefix_len = 0;
+	for (int i = 0, j = 0; i < cigar.size() && j < ref_prefix_len; i++) {
 		int op = cigar_int_to_op(cigar[i]);
 		int len = cigar_int_to_len(cigar[i]);
-		if (op == 'M') {
+		if (op == '=') {
+			len = std::min(len, ref_prefix_len-j);
 			score += len*match_score;
+			query_prefix_len += len;
 			j += len;
 		} else if (op == 'X') {
+			len = std::min(len, ref_prefix_len-j);
 			score += len*mismatch_score;
+			query_prefix_len += len;
 			j += len;
 		} else if (op == 'I') {
 			score += gap_open_score + (len-1)*gap_extend_score;
+			query_prefix_len += len;
 		} else if (op == 'D') {
+			len = std::min(len, ref_prefix_len-j);
 			score += gap_open_score + (len-1)*gap_extend_score;
 			j += len;
 		}
 	}
-	return score;
+	return {score, query_prefix_len};
 }
 
-int find_aln_suffix_score(std::vector<uint32_t> cigar, int suffix_len, int match_score, int mismatch_score, 
+std::pair<int, int> find_aln_suffix_score(std::vector<uint32_t> cigar, int ref_suffix_len, int match_score, int mismatch_score,
 						  int gap_open_score, int gap_extend_score) {
 	std::vector<uint32_t> rev_cigar(cigar.rbegin(), cigar.rend());
-	return find_aln_prefix_score(rev_cigar, suffix_len, match_score, mismatch_score, gap_open_score, gap_extend_score);
+	return find_aln_prefix_score(rev_cigar, ref_suffix_len, match_score, mismatch_score, gap_open_score, gap_extend_score);
 }
 
 #endif //SURVINDEL2_UTILS_H

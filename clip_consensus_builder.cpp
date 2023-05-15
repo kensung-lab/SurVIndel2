@@ -690,6 +690,7 @@ int main(int argc, char* argv[]) {
     for (size_t contig_id = 0; contig_id < contig_map.size(); contig_id++) {
     	std::string contig_name = contig_map.get_name(contig_id);
     	std::vector<consensus_t*>& consensuses = unpaired_consensuses_by_chr[contig_name];
+    	if (consensuses.empty()) continue;
     	for (int i = 0; i <= consensuses.size()/block_size; i++) {
     		int start = i * block_size;
     		int end = std::min(start+block_size, (int) consensuses.size());
