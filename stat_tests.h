@@ -660,6 +660,124 @@ int find_smallest_range_start(std::vector<int>& v, int range_size, int& min_cum)
 	return best_start;
 }
 
+void calculate_cluster_region_disc(std::string contig_name, std::vector<deletion_t*> deletions, open_samFile_t* bam_file) {
+
+	std::vector<char*> l_cluster_regions, r_cluster_regions;
+	for (deletion_t* deletion : deletions) {
+		std::stringstream ss;
+		ss << contig_name << ":" << deletion->rc_anchor_start << "-" << deletion->start;
+		char* region = new char[ss.str().length()+1];
+		strcpy(region, ss.str().c_str());
+		l_cluster_regions.push_back(region);
+
+		ss.str("");
+		ss << contig_name << ":" << deletion->end << "-" << deletion->lc_anchor_end;
+		region = new char[ss.str().length()+1];
+		strcpy(region, ss.str().c_str());
+		r_cluster_regions.push_back(region);
+	}
+
+	std::sort(deletions.begin(), deletions.end(), [](const deletion_t* d1, const deletion_t* d2) {
+		return d1->rc_anchor_start < d2->rc_anchor_start;
+	});
+
+	int curr_pos = 0;
+	hts_itr_t* iter = sam_itr_regarray(bam_file->idx, bam_file->header, l_cluster_regions.data(), l_cluster_regions.size());
+	bam1_t* read = bam_init1();
+	while (sam_itr_next(bam_file->file, iter, read) >= 0) {
+		while (curr_pos < deletions.size() && deletions[curr_pos]->start < read->core.pos) curr_pos++;
+
+		if (is_mate_unmapped(read) || !is_samechr(read) || is_samestr(read) || is_outward(read)) {
+			for (int i = curr_pos; i < deletions.size() && deletions[i]->rc_anchor_start <= bam_endpos(read); i++) {
+				if (read->core.pos <= deletions[i]->start) deletions[i]->l_cluster_region_disc_pairs++;
+			}
+		}
+	}
+
+	std::sort(deletions.begin(), deletions.end(), [](const deletion_t* d1, const deletion_t* d2) {
+		return d1->end < d2->end;
+	});
+
+	curr_pos = 0;
+	iter = sam_itr_regarray(bam_file->idx, bam_file->header, r_cluster_regions.data(), r_cluster_regions.size());
+	while (sam_itr_next(bam_file->file, iter, read) >= 0) {
+		while (curr_pos < deletions.size() && deletions[curr_pos]->lc_anchor_end < read->core.pos) curr_pos++;
+
+		if (is_mate_unmapped(read) || !is_samechr(read) || is_samestr(read) || is_outward(read)) {
+			for (int i = curr_pos; i < deletions.size() && deletions[i]->end <= bam_endpos(read); i++) {
+				if (read->core.pos <= deletions[i]->lc_anchor_end) deletions[i]->r_cluster_region_disc_pairs++;
+			}
+		}
+	}
+
+	for (char* region : l_cluster_regions) {
+		delete[] region;
+	}
+	for (char* region : r_cluster_regions) {
+		delete[] region;
+	}
+}
+
+void calculate_cluster_region_disc(std::string contig_name, std::vector<duplication_t*> duplications, open_samFile_t* bam_file, config_t& config) {
+
+	std::vector<char*> lc_cluster_regions, rc_cluster_regions;
+	for (duplication_t* duplication : duplications) {
+		std::stringstream ss;
+		ss << contig_name << ":" << duplication->rc_anchor_start << "-" << duplication->end;
+		char* region = new char[ss.str().length()+1];
+		strcpy(region, ss.str().c_str());
+		rc_cluster_regions.push_back(region);
+
+		ss.str("");
+		ss << contig_name << ":" << duplication->start << "-" << duplication->lc_anchor_end;
+		region = new char[ss.str().length()+1];
+		strcpy(region, ss.str().c_str());
+		lc_cluster_regions.push_back(region);
+	}
+
+	std::sort(duplications.begin(), duplications.end(), [](const duplication_t* d1, const duplication_t* d2) {
+		return d1->rc_anchor_start < d2->rc_anchor_start;
+	});
+
+	int curr_pos = 0;
+	hts_itr_t* iter = sam_itr_regarray(bam_file->idx, bam_file->header, rc_cluster_regions.data(), rc_cluster_regions.size());
+	bam1_t* read = bam_init1();
+	while (sam_itr_next(bam_file->file, iter, read) >= 0) {
+		while (curr_pos < duplications.size() && duplications[curr_pos]->end < read->core.pos) curr_pos++;
+
+		if (is_mate_unmapped(read) || !is_samechr(read) || is_samestr(read) || is_long(read, config.max_is)) {
+			for (int i = curr_pos; i < duplications.size() && duplications[i]->rc_anchor_start <= bam_endpos(read); i++) {
+				if (read->core.pos <= duplications[i]->end) {
+					duplications[i]->rc_cluster_region_disc_pairs++;
+				}
+			}
+		}
+	}
+
+	std::sort(duplications.begin(), duplications.end(), [](const duplication_t* d1, const duplication_t* d2) {
+		return d1->start < d2->start;
+	});
+
+	curr_pos = 0;
+	iter = sam_itr_regarray(bam_file->idx, bam_file->header, rc_cluster_regions.data(), rc_cluster_regions.size());
+	while (sam_itr_next(bam_file->file, iter, read) >= 0) {
+		while (curr_pos < duplications.size() && duplications[curr_pos]->lc_anchor_end < read->core.pos) curr_pos++;
+
+		if (is_mate_unmapped(read) || !is_samechr(read) || is_samestr(read) || is_long(read, config.max_is)) {
+			for (int i = curr_pos; i < duplications.size() && duplications[i]->start <= bam_endpos(read); i++) {
+				if (read->core.pos <= duplications[i]->lc_anchor_end) duplications[i]->lc_cluster_region_disc_pairs++;
+			}
+		}
+	}
+
+	for (char* region : lc_cluster_regions) {
+		delete[] region;
+	}
+	for (char* region : rc_cluster_regions) {
+		delete[] region;
+	}
+}
+
 void calculate_confidence_interval_size(std::string contig_name, std::vector<double>& global_crossing_isize_dist,
 										std::vector<uint32_t>& median_crossing_count_geqi_by_isize,
 										std::vector<deletion_t*>& deletions, open_samFile_t* bam_file, config_t config, stats_t stats) {
@@ -812,129 +930,13 @@ void calculate_confidence_interval_size(std::string contig_name, std::vector<dou
         }
     }
 
+    calculate_cluster_region_disc(contig_name, deletions, bam_file);
+
     for (char* region : regions) {
         delete[] region;
     }
     hts_itr_destroy(iter);
     bam_destroy1(read);
-}
-
-void calculate_cluster_region_disc(std::string contig_name, std::vector<deletion_t*> deletions, open_samFile_t* bam_file) {
-
-	std::vector<char*> l_cluster_regions, r_cluster_regions;
-	for (deletion_t* deletion : deletions) {
-		std::stringstream ss;
-		ss << contig_name << ":" << deletion->rc_anchor_start << "-" << deletion->start;
-		char* region = new char[ss.str().length()+1];
-		strcpy(region, ss.str().c_str());
-		l_cluster_regions.push_back(region);
-
-		ss.str("");
-		ss << contig_name << ":" << deletion->end << "-" << deletion->lc_anchor_end;
-		region = new char[ss.str().length()+1];
-		strcpy(region, ss.str().c_str());
-		r_cluster_regions.push_back(region);
-	}
-
-	std::sort(deletions.begin(), deletions.end(), [](const deletion_t* d1, const deletion_t* d2) {
-		return d1->rc_anchor_start < d2->rc_anchor_start;
-	});
-
-	int curr_pos = 0;
-	hts_itr_t* iter = sam_itr_regarray(bam_file->idx, bam_file->header, l_cluster_regions.data(), l_cluster_regions.size());
-	bam1_t* read = bam_init1();
-	while (sam_itr_next(bam_file->file, iter, read) >= 0) {
-		while (curr_pos < deletions.size() && deletions[curr_pos]->start < read->core.pos) curr_pos++;
-
-		if (is_mate_unmapped(read) || !is_samechr(read) || is_samestr(read) || is_outward(read)) {
-			for (int i = curr_pos; i < deletions.size() && deletions[i]->rc_anchor_start <= bam_endpos(read); i++) {
-				if (read->core.pos <= deletions[i]->start) deletions[i]->l_cluster_region_disc_pairs++;
-			}
-		}
-	}
-
-	std::sort(deletions.begin(), deletions.end(), [](const deletion_t* d1, const deletion_t* d2) {
-		return d1->end < d2->end;
-	});
-
-	curr_pos = 0;
-	iter = sam_itr_regarray(bam_file->idx, bam_file->header, r_cluster_regions.data(), r_cluster_regions.size());
-	while (sam_itr_next(bam_file->file, iter, read) >= 0) {
-		while (curr_pos < deletions.size() && deletions[curr_pos]->lc_anchor_end < read->core.pos) curr_pos++;
-
-		if (is_mate_unmapped(read) || !is_samechr(read) || is_samestr(read) || is_outward(read)) {
-			for (int i = curr_pos; i < deletions.size() && deletions[i]->end <= bam_endpos(read); i++) {
-				if (read->core.pos <= deletions[i]->lc_anchor_end) deletions[i]->r_cluster_region_disc_pairs++;
-			}
-		}
-	}
-
-	for (char* region : l_cluster_regions) {
-		delete[] region;
-	}
-	for (char* region : r_cluster_regions) {
-		delete[] region;
-	}
-}
-
-void calculate_cluster_region_disc(std::string contig_name, std::vector<duplication_t*> duplications, open_samFile_t* bam_file, config_t& config) {
-
-	std::vector<char*> lc_cluster_regions, rc_cluster_regions;
-	for (duplication_t* duplication : duplications) {
-		std::stringstream ss;
-		ss << contig_name << ":" << duplication->rc_anchor_start << "-" << duplication->end;
-		char* region = new char[ss.str().length()+1];
-		strcpy(region, ss.str().c_str());
-		rc_cluster_regions.push_back(region);
-
-		ss.str("");
-		ss << contig_name << ":" << duplication->start << "-" << duplication->lc_anchor_end;
-		region = new char[ss.str().length()+1];
-		strcpy(region, ss.str().c_str());
-		lc_cluster_regions.push_back(region);
-	}
-
-	std::sort(duplications.begin(), duplications.end(), [](const duplication_t* d1, const duplication_t* d2) {
-		return d1->rc_anchor_start < d2->rc_anchor_start;
-	});
-
-	int curr_pos = 0;
-	hts_itr_t* iter = sam_itr_regarray(bam_file->idx, bam_file->header, rc_cluster_regions.data(), rc_cluster_regions.size());
-	bam1_t* read = bam_init1();
-	while (sam_itr_next(bam_file->file, iter, read) >= 0) {
-		while (curr_pos < duplications.size() && duplications[curr_pos]->end < read->core.pos) curr_pos++;
-
-		if (is_mate_unmapped(read) || !is_samechr(read) || is_samestr(read) || is_long(read, config.max_is)) {
-			for (int i = curr_pos; i < duplications.size() && duplications[i]->rc_anchor_start <= bam_endpos(read); i++) {
-				if (read->core.pos <= duplications[i]->end) {
-					duplications[i]->rc_cluster_region_disc_pairs++;
-				}
-			}
-		}
-	}
-
-	std::sort(duplications.begin(), duplications.end(), [](const duplication_t* d1, const duplication_t* d2) {
-		return d1->start < d2->start;
-	});
-
-	curr_pos = 0;
-	iter = sam_itr_regarray(bam_file->idx, bam_file->header, rc_cluster_regions.data(), rc_cluster_regions.size());
-	while (sam_itr_next(bam_file->file, iter, read) >= 0) {
-		while (curr_pos < duplications.size() && duplications[curr_pos]->lc_anchor_end < read->core.pos) curr_pos++;
-
-		if (is_mate_unmapped(read) || !is_samechr(read) || is_samestr(read) || is_long(read, config.max_is)) {
-			for (int i = curr_pos; i < duplications.size() && duplications[i]->start <= bam_endpos(read); i++) {
-				if (read->core.pos <= duplications[i]->lc_anchor_end) duplications[i]->lc_cluster_region_disc_pairs++;
-			}
-		}
-	}
-
-	for (char* region : lc_cluster_regions) {
-		delete[] region;
-	}
-	for (char* region : rc_cluster_regions) {
-		delete[] region;
-	}
 }
 
 void calculate_ptn_ratio(std::string contig_name, std::vector<deletion_t*>& deletions, open_samFile_t* bam_file, config_t config) {

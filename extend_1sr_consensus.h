@@ -70,9 +70,8 @@ std::vector<bool> find_vertices_in_cycles_fast(std::vector<std::vector<edge_t> >
 	return in_cycle;
 }
 
-void build_graph_fwd(std::vector<std::string>& read_seqs, std::vector<int>& out_edges,
-		std::vector<std::vector<edge_t> >& l_adj, std::vector<std::vector<edge_t> >& l_adj_rev,
-		std::unordered_map<uint64_t, std::vector<int> >& kmer_to_idx, int min_overlap) {
+void build_graph_fwd(std::vector<std::string>& read_seqs, std::vector<int> starting_idxs, std::vector<int>& out_edges,
+		std::vector<std::vector<edge_t> >& l_adj, std::vector<std::vector<edge_t> >& l_adj_rev, int min_overlap) {
 
 	uint64_t nucl_bm[256] = { 0 };
 	nucl_bm['A'] = nucl_bm['a'] = 0;
@@ -84,8 +83,23 @@ void build_graph_fwd(std::vector<std::string>& read_seqs, std::vector<int>& out_
 	int n = read_seqs.size();
 	std::vector<bool> visited(n);
 
+	std::unordered_map<uint64_t, std::vector<int> > kmer_to_idx;
+	for (int i = 0; i < n; i++) {
+		uint64_t kmer = 0;
+
+		std::string& seq = read_seqs[i];
+		for (int j = 0; j < seq.length()-1; j++) {
+			uint64_t nv = nucl_bm[seq[j]];
+			kmer = ((kmer << 2) | nv);
+
+			if (j >= 32) {
+				kmer_to_idx[kmer].push_back(i);
+			}
+		}
+	}
+
 	std::queue<int> bfs;
-	bfs.push(0);
+	for (int i : starting_idxs) bfs.push(i);
 	while (!bfs.empty()) {
 		int i = bfs.front();
 		bfs.pop();
@@ -118,9 +132,8 @@ void build_graph_fwd(std::vector<std::string>& read_seqs, std::vector<int>& out_
 	}
 }
 
-void build_graph_rev(std::vector<std::string>& read_seqs, std::vector<int>& out_edges,
-		std::vector<std::vector<edge_t> >& l_adj, std::vector<std::vector<edge_t> >& l_adj_rev,
-		std::unordered_map<uint64_t, std::vector<int> >& kmer_to_idx, int min_overlap) {
+void build_graph_rev(std::vector<std::string>& read_seqs, std::vector<int> starting_idxs, std::vector<int>& out_edges,
+		std::vector<std::vector<edge_t> >& l_adj, std::vector<std::vector<edge_t> >& l_adj_rev, int min_overlap) {
 
 	uint64_t nucl_bm[256] = { 0 };
 	nucl_bm['A'] = nucl_bm['a'] = 0;
@@ -132,8 +145,24 @@ void build_graph_rev(std::vector<std::string>& read_seqs, std::vector<int>& out_
 	int n = read_seqs.size();
 	std::vector<bool> visited(n);
 
+	std::unordered_map<uint64_t, std::vector<int> > kmer_to_idx;
+
+	for (int i = 0; i < n; i++) {
+		uint64_t kmer = 0;
+
+		std::string& seq = read_seqs[i];
+		for (int j = 0; j < seq.length(); j++) {
+			uint64_t nv = nucl_bm[seq[j]];
+			kmer = ((kmer << 2) | nv);
+
+			if (j >= 32+1) {
+				kmer_to_idx[kmer].push_back(i);
+			}
+		}
+	}
+
 	std::queue<int> bfs;
-	bfs.push(0);
+	for (int i : starting_idxs) bfs.push(i);
 	while (!bfs.empty()) {
 		int i = bfs.front();
 		bfs.pop();
@@ -233,15 +262,23 @@ void get_extension_reads(std::string contig_name, hts_pos_t target_start, hts_po
 	}
 }
 
+void break_cycles(std::vector<int>& out_edges, std::vector<std::vector<edge_t> >& l_adj, std::vector<std::vector<edge_t> >& l_adj_rev) {
+	int n = l_adj.size();
+	std::vector<bool> in_cycle = find_vertices_in_cycles_fast(l_adj);
+	for (int i = 0; i < n; i++) {
+		if (in_cycle[i]) {
+			l_adj[i].clear();
+			out_edges[i] = 0;
+		}
+		l_adj_rev[i].erase(
+			std::remove_if(l_adj_rev[i].begin(), l_adj_rev[i].end(), [&in_cycle](edge_t& e) {return in_cycle[e.next];}),
+			l_adj_rev[i].end()
+		);
+	}
+}
+
 void extend_consensus_to_right(consensus_t* consensus, hts_pos_t target_start, hts_pos_t target_end, std::string contig_name, hts_pos_t contig_len,
 		config_t config, open_samFile_t* bam_file, std::unordered_map<std::string, std::pair<std::string, int> >& mateseqs_w_mapq) {
-
-	uint64_t nucl_bm[256] = { 0 };
-    nucl_bm['A'] = nucl_bm['a'] = 0;
-    nucl_bm['C'] = nucl_bm['c'] = 1;
-    nucl_bm['G'] = nucl_bm['g'] = 2;
-    nucl_bm['T'] = nucl_bm['t'] = 3;
-    nucl_bm['N'] = 0;
 
 	std::vector<std::string> read_seqs;
 	std::vector<int> read_mapqs;
@@ -252,41 +289,15 @@ void extend_consensus_to_right(consensus_t* consensus, hts_pos_t target_start, h
 
 	if (read_seqs.size() > 5000) return;
 
-	std::unordered_map<uint64_t, std::vector<int> > kmer_to_idx;
-
 	int n = read_seqs.size();
-	for (int i = 0; i < n; i++) {
-		uint64_t kmer = 0;
-
-		std::string& seq = read_seqs[i];
-		for (int j = 0; j < seq.length()-1; j++) {
-	        uint64_t nv = nucl_bm[seq[j]];
-			kmer = ((kmer << 2) | nv);
-
-			if (j >= 32) {
-				kmer_to_idx[kmer].push_back(i);
-			}
-		}
-	}
-
 	std::vector<int> out_edges(n);
 	std::vector<std::vector<edge_t> > l_adj(n), l_adj_rev(n);
-	build_graph_fwd(read_seqs, out_edges, l_adj, l_adj_rev, kmer_to_idx, config.read_len/2);
+	build_graph_fwd(read_seqs, std::vector<int>(1, 0), out_edges, l_adj, l_adj_rev, config.read_len/2);
 
 	std::vector<int> rev_topological_order = find_rev_topological_order(n, out_edges, l_adj_rev);
 	bool cycle_at_0 = std::find(rev_topological_order.begin(), rev_topological_order.end(), 0) == rev_topological_order.end();
 	if (cycle_at_0) {
-		std::vector<bool> in_cycle = find_vertices_in_cycles_fast(l_adj);
-		for (int i = 0; i < n; i++) {
-			if (in_cycle[i]) {
-				l_adj[i].clear();
-				out_edges[i] = 0;
-			}
-			l_adj_rev[i].erase(
-				std::remove_if(l_adj_rev[i].begin(), l_adj_rev[i].end(), [&in_cycle](edge_t& e) {return in_cycle[e.next];}),
-				l_adj_rev[i].end()
-			);
-		}
+		break_cycles(out_edges, l_adj, l_adj_rev);
 		rev_topological_order = find_rev_topological_order(n, out_edges, l_adj_rev);
 	}
 
@@ -342,13 +353,6 @@ void extend_rc_consensus(consensus_t* consensus, std::string contig_name, hts_po
 void extend_consensus_to_left(consensus_t* consensus, hts_pos_t target_start, hts_pos_t target_end, std::string contig_name, hts_pos_t contig_len,
 		config_t config, open_samFile_t* bam_file, std::unordered_map<std::string, std::pair<std::string, int> >& mateseqs_w_mapq) {
 
-	uint64_t nucl_bm[256] = { 0 };
-	nucl_bm['A'] = nucl_bm['a'] = 0;
-	nucl_bm['C'] = nucl_bm['c'] = 1;
-	nucl_bm['G'] = nucl_bm['g'] = 2;
-	nucl_bm['T'] = nucl_bm['t'] = 3;
-	nucl_bm['N'] = 0;
-
 	std::vector<std::string> read_seqs;
 	std::vector<int> read_mapqs;
 	read_seqs.push_back(consensus->consensus);
@@ -357,42 +361,16 @@ void extend_consensus_to_left(consensus_t* consensus, hts_pos_t target_start, ht
 
 	if (read_seqs.size() > 5000) return;
 
-	std::unordered_map<uint64_t, std::vector<int> > kmer_to_idx;
-
 	int n = read_seqs.size();
-	for (int i = 0; i < n; i++) {
-		uint64_t kmer = 0;
-
-		std::string& seq = read_seqs[i];
-		for (int j = 0; j < seq.length(); j++) {
-			uint64_t nv = nucl_bm[seq[j]];
-			kmer = ((kmer << 2) | nv);
-
-			if (j >= 32+1) {
-				kmer_to_idx[kmer].push_back(i);
-			}
-		}
-	}
-
 	std::vector<int> out_edges(n);
 	std::vector<std::vector<edge_t> > l_adj(n), l_adj_rev(n);
-	build_graph_rev(read_seqs, out_edges, l_adj, l_adj_rev, kmer_to_idx, config.read_len/2);
+	build_graph_rev(read_seqs, std::vector<int>(1, 0), out_edges, l_adj, l_adj_rev, config.read_len/2);
 
 	std::vector<int> rev_topological_order = find_rev_topological_order(n, out_edges, l_adj_rev);
 
 	bool cycle_at_0 = std::find(rev_topological_order.begin(), rev_topological_order.end(), 0) == rev_topological_order.end();
 	if (cycle_at_0) {
-		std::vector<bool> in_cycle = find_vertices_in_cycles_fast(l_adj);
-		for (int i = 0; i < n; i++) {
-			if (in_cycle[i]) {
-				l_adj[i].clear();
-				out_edges[i] = 0;
-			}
-			l_adj_rev[i].erase(
-				std::remove_if(l_adj_rev[i].begin(), l_adj_rev[i].end(), [&in_cycle](edge_t& e) {return in_cycle[e.next];}),
-				l_adj_rev[i].end()
-			);
-		}
+		break_cycles(out_edges, l_adj, l_adj_rev);
 		rev_topological_order = find_rev_topological_order(n, out_edges, l_adj_rev);
 	}
 

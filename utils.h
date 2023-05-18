@@ -54,7 +54,7 @@ struct indel_t {
     std::string id;
     hts_pos_t start, end;
     hts_pos_t rc_anchor_start, lc_anchor_end; // start of the rc anchor and lc anchor end
-    int disc_pairs = 0, disc_pairs_maxmapq = 0;
+    int disc_pairs = 0, disc_pairs_trusted = 0, disc_pairs_high_mapq = 0, disc_pairs_maxmapq = 0;
     consensus_t* lc_consensus,* rc_consensus;
     double mm_rate = 0.0;
     std::string source;
@@ -558,6 +558,12 @@ bcf_hdr_t* generate_vcf_header(chr_seqs_map_t& contigs, std::string& sample_name
 	const char* disc_pairs_tag = "##INFO=<ID=DISC_PAIRS,Number=1,Type=Integer,Description=\"Discordant pairs supporting the SV.\">";
 	bcf_hdr_add_hrec(header, bcf_hdr_parse_line(header, disc_pairs_tag, &len));
 
+	const char* disc_pairs_trusted_tag = "##INFO=<ID=DISC_PAIRS_TRUSTED,Number=1,Type=Integer,Description=\"Discordant pairs likely to be aligned to the correct location.\">";
+	bcf_hdr_add_hrec(header, bcf_hdr_parse_line(header, disc_pairs_trusted_tag, &len));
+
+	const char* disc_pairs_hmapq_tag = "##INFO=<ID=DISC_PAIRS_HIGHMAPQ,Number=1,Type=Integer,Description=\"HDiscordant pairs with high MAPQ supporting the SV.\">";
+	bcf_hdr_add_hrec(header, bcf_hdr_parse_line(header, disc_pairs_hmapq_tag, &len));
+
 	const char* disc_pairs_surr_tag = "##INFO=<ID=DISC_PAIRS_SURROUNDING,Number=2,Type=Integer,Description=\"Discordant pairs around the SV.\">";
 	bcf_hdr_add_hrec(header, bcf_hdr_parse_line(header, disc_pairs_surr_tag, &len));
 
@@ -703,6 +709,10 @@ void del2bcf(bcf_hdr_t* hdr, bcf1_t* bcf_entry, char* chr_seq, std::string& cont
 	bcf_update_info_int32(hdr, bcf_entry, "DISC_PAIRS", &del->disc_pairs, 1);
 	if (del->disc_pairs > 0) {
 		bcf_update_info_int32(hdr, bcf_entry, "DISC_PAIRS_MAXMAPQ", &del->disc_pairs_maxmapq, 1);
+	}
+	if (del->source == "DP") {
+		bcf_update_info_int32(hdr, bcf_entry, "DISC_PAIRS_TRUSTED", &del->disc_pairs_trusted, 1);
+		bcf_update_info_int32(hdr, bcf_entry, "DISC_PAIRS_HIGHMAPQ", &del->disc_pairs_high_mapq, 1);
 	}
 	int disc_pairs_surr[] = {del->l_cluster_region_disc_pairs, del->r_cluster_region_disc_pairs};
 	bcf_update_info_int32(hdr, bcf_entry, "DISC_PAIRS_SURROUNDING", disc_pairs_surr, 2);

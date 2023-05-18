@@ -10,6 +10,7 @@
 #include "sam_utils.h"
 #include "stat_tests.h"
 #include "remapping.h"
+#include "extend_1sr_consensus.h"
 #include "libs/kdtree.h"
 
 std::string workdir;
@@ -23,6 +24,7 @@ std::string reference_fname;
 bcf_hdr_t* dp_vcf_header;
 
 std::unordered_map<std::string, std::vector<deletion_t*>> deletions_by_chr;
+std::unordered_map<std::string, std::vector<std::vector<std::string>>> deletion_ra_reads_by_chr, deletion_la_reads_by_chr;
 std::unordered_map<std::string, std::vector<duplication_t*>> duplications_by_chr;
 std::unordered_map<std::string, std::vector<bcf1_t*>> sr_entries_by_chr, sr_nonpass_entries_by_chr;
 std::unordered_map<std::string, std::vector<bcf1_t*>> dp_entries_by_chr;
@@ -37,22 +39,23 @@ enum cluster_type_enum { LONG_PAIR, OUTWARD_PAIR };
 struct cluster_t {
 	hts_pos_t la_start, la_end, ra_start, ra_end;
 	bool la_end_clipped, ra_start_clipped;
-	int count = 1;
+	int count = 1, confident_count = 0;
 	uint8_t max_mapq;
 	bool used = false;
 	cluster_type_enum type;
 	std::string rightmost_lseq, leftmost_rseq; // right-most right-facing sequence and left-most left-facing seq
-	std::vector<std::string> reads;
+	std::vector<std::string> reads_seqs;
 
 	cluster_t() : la_start(0), la_end(0), ra_start(0), ra_end(0), max_mapq(0) {}
 	cluster_t(bam1_t* read) : la_start(read->core.pos), la_end(bam_endpos(read)), ra_start(read->core.mpos), ra_end(get_mate_endpos(read)),
 			max_mapq(std::min(read->core.qual, (uint8_t) get_mq(read))) {
+		confident_count = max_mapq == config.high_confidence_mapq;
 		la_end_clipped = is_right_clipped(read, config.min_clip_len);
 		ra_start_clipped = is_mate_left_clipped(read, config.min_clip_len);
 		rightmost_lseq = get_sequence(read);
 		leftmost_rseq = bam_get_qname(read);
 		type = read->core.isize < 0 ? OUTWARD_PAIR : LONG_PAIR;
-//		reads.push_back(bam_get_qname(read));
+		reads_seqs.push_back(get_sequence(read));
 	}
 };
 bool operator < (const cluster_t& c1, const cluster_t& c2) {
@@ -76,10 +79,11 @@ cluster_t* merge(cluster_t* c1, cluster_t* c2) {
 	merged->ra_start = std::min(c1->ra_start, c2->ra_start);
 	merged->ra_end = std::max(c1->ra_end, c2->ra_end);
 	merged->count = c1->count + c2->count;
+	merged->confident_count = c1->confident_count + c2->confident_count;
 	merged->max_mapq = std::max(c1->max_mapq, c2->max_mapq);
 	merged->type = c1->type;
-	merged->reads.insert(merged->reads.end(), c1->reads.begin(), c1->reads.end());
-	merged->reads.insert(merged->reads.end(), c2->reads.begin(), c2->reads.end());
+	merged->reads_seqs.insert(merged->reads_seqs.end(), c1->reads_seqs.begin(), c1->reads_seqs.end());
+	merged->reads_seqs.insert(merged->reads_seqs.end(), c2->reads_seqs.begin(), c2->reads_seqs.end());
 
 	// set rightmost_lseq
 	if (c1->la_end > c2->la_end) merged->rightmost_lseq = c1->rightmost_lseq;
@@ -180,7 +184,107 @@ void cluster_clusters(std::vector<cluster_t*>& clusters) {
 	std::sort(clusters.begin(), clusters.end());
 }
 
-void cluster_dps(int id, int contig_id, std::string contig_name) {
+std::vector<edge_t> find_path_traversing_most_marked_nodes(std::vector<int> out_edges, std::vector<std::vector<edge_t> >& l_adj,
+		std::vector<std::vector<edge_t> >& l_adj_rev, std::vector<int>& marked_nodes) {
+
+	int n = l_adj.size();
+
+	std::vector<bool> marked_nodes_lookup(n);
+	std::vector<int> best_scores_marked(n), best_scores(n);
+	for (int i : marked_nodes) {
+		marked_nodes_lookup[i] = true;
+		best_scores_marked[i] = 1;
+	}
+
+	std::vector<int> rev_topological_order = find_rev_topological_order(n, out_edges, l_adj_rev);
+
+	std::vector<edge_t> best_edges(n);
+	for (int i : rev_topological_order) {
+		int next_score = 1 + best_scores[i];
+		for (edge_t& e : l_adj_rev[i]) {
+			int next_score_marked = marked_nodes_lookup[e.next] + best_scores_marked[i];
+			if (std::tie(best_scores_marked[e.next], best_scores[e.next]) < std::tie(next_score_marked, next_score)) {
+				best_scores_marked[e.next] = next_score_marked;
+				best_scores[e.next] = next_score;
+				best_edges[e.next] = {i, e.score, e.overlap};
+			}
+		}
+	}
+
+	int best_start = 0;
+	for (int i = 0; i < n; i++) {
+		if (std::tie(best_scores_marked[best_start], best_scores[best_start]) < std::tie(best_scores_marked[i], best_scores[i])) {
+			best_start = i;
+		}
+	}
+
+	edge_t e = {best_start, 0, 1}; // fake edge that points to the first node in the path
+	std::vector<edge_t> best_path(1, e);
+	while (e.overlap) {
+		e = best_edges[e.next];
+		best_path.push_back(e);
+	}
+	return best_path;
+}
+
+std::string assemble_cluster(hts_pos_t cluster_start, hts_pos_t cluster_end, std::vector<std::string>& cluster_read_seqs,
+		std::string contig_name, open_samFile_t* bam_file, std::unordered_map<std::string, std::pair<std::string, int> >& mateseqs_w_mapq) {
+
+	std::vector<std::string> read_seqs;
+	std::vector<int> read_mapqs;
+	get_extension_reads(contig_name, cluster_start, cluster_end,
+			chr_seqs.get_len(contig_name), read_seqs, read_mapqs, mateseqs_w_mapq, config, bam_file, 5000);
+	if (read_seqs.size() > 5000) return "";
+
+	int n = read_seqs.size();
+	std::unordered_set<std::string> cluster_read_seqs_set(cluster_read_seqs.begin(), cluster_read_seqs.end());
+	std::vector<int> dp_reads;
+	for (int i = 0; i < read_seqs.size(); i++) {
+		if (cluster_read_seqs_set.count(read_seqs[i])) {
+			dp_reads.push_back(i);
+		}
+	}
+
+	std::vector<int> out_edges(n);
+	std::vector<std::vector<edge_t> > l_adj(n), l_adj_rev(n);
+	build_graph_fwd(read_seqs, dp_reads, out_edges, l_adj, l_adj_rev, config.read_len/2);
+	break_cycles(out_edges, l_adj, l_adj_rev);
+
+	std::vector<edge_t> best_path = find_path_traversing_most_marked_nodes(out_edges, l_adj, l_adj_rev, dp_reads);
+	std::string assembled_contig = read_seqs[best_path[0].next];
+	for (int i = 1; i < best_path.size(); i++) {
+		assembled_contig += read_seqs[best_path[i].next].substr(best_path[i].overlap);
+	}
+
+	return assembled_contig;
+}
+
+void compute_trusted_disc_pairs(int id, std::string contig_name, std::vector<deletion_t*>* deletions,
+		std::vector<std::vector<std::string>>* deletion_ra_reads, int start, int end, std::string bam_fname,
+		std::unordered_map<std::string, std::pair<std::string, int> >* mateseqs_w_mapq) {
+
+	StripedSmithWaterman::Aligner aligner(1, 4, 6, 1, true);
+	StripedSmithWaterman::Filter filter;
+	open_samFile_t* bam_file = open_samFile(bam_fname);
+		for (int i = start; i < deletions->size() && i < end; i++) {
+			deletion_t* del = deletions->at(i);
+			std::string assembled_contig = assemble_cluster(del->rc_anchor_start, del->start,
+					(*deletion_ra_reads)[i], contig_name, bam_file, *mateseqs_w_mapq);
+			StripedSmithWaterman::Alignment aln;
+			for (std::string read : deletion_ra_reads->at(i)) {
+				aligner.Align(read.c_str(), assembled_contig.c_str(), assembled_contig.length(), filter, &aln, 0);
+				if (!is_left_clipped(aln) && !is_right_clipped(aln)) {
+					del->disc_pairs_trusted++;
+				}
+			}
+	}
+	close_samFile(bam_file);
+
+	std::cout << "Good reads computed for " << contig_name << " " << start << "," << end << std::endl;
+}
+
+void cluster_dps(int id, int contig_id, std::string contig_name, std::string bam_fname,
+		std::unordered_map<std::string, std::pair<std::string, int> >* mateseqs_w_mapq) {
 	std::string dp_fname = workdir + "/workspace/" + std::to_string(contig_id) + "-DP.bam";
 	open_samFile_t* dp_bam_file = open_samFile(dp_fname, true);
 
@@ -190,7 +294,6 @@ void cluster_dps(int id, int contig_id, std::string contig_name) {
 	bam1_t* read = bam_init1();
 	while (sam_itr_next(dp_bam_file->file, iter, read) >= 0) {
 		cluster_t* cluster = new cluster_t(read);
-		cluster->reads.push_back(bam_get_qname(read));
 		if (cluster->type == LONG_PAIR) {
 			lp_clusters.push_back(cluster);
 		} else {
@@ -206,6 +309,8 @@ void cluster_dps(int id, int contig_id, std::string contig_name) {
 
 	auto set_indel_info = [&contig_name](indel_t* indel, cluster_t* c) {
 		indel->disc_pairs = c->count;
+		indel->disc_pairs_maxmapq = c->max_mapq;
+		indel->disc_pairs_high_mapq = c->confident_count;
 		indel->extra_info += "LC=" + std::to_string(c->la_start) + "-" + std::to_string(c->la_end) + ",";
 		indel->extra_info += "RC=" + std::to_string(c->ra_start) + "-" + std::to_string(c->ra_end) + ",";
 
@@ -214,14 +319,15 @@ void cluster_dps(int id, int contig_id, std::string contig_name) {
 	};
 
 	std::vector<deletion_t*> deletions;
+	std::vector<std::vector<std::string>> deletion_ra_reads;
 	for (cluster_t* c : lp_clusters) {
 		if (c->used || c->count < min_cluster_size || c->max_mapq < 0) continue; //config.high_confidence_mapq) continue;
 
 		if (c->la_end < c->ra_start) {
 			deletion_t* del = new deletion_t(c->la_end, c->ra_start, c->la_start, c->ra_end, NULL, NULL, 0, 0, "DP", "");
-			del->disc_pairs_maxmapq = c->max_mapq;
 			set_indel_info(del, c);
 			deletions.push_back(del);
+			deletion_ra_reads.push_back(c->reads_seqs);
 		}
 	}
 
@@ -238,6 +344,7 @@ void cluster_dps(int id, int contig_id, std::string contig_name) {
 
 	maps_mtx.lock();
 	deletions_by_chr[contig_name] = deletions;
+	deletion_ra_reads_by_chr[contig_name] = deletion_ra_reads;
 	duplications_by_chr[contig_name] = duplications;
 	maps_mtx.unlock();
 
@@ -279,6 +386,9 @@ void merge_sr_dp(int id, int contig_id, std::string contig_name, bcf_hdr_t* sr_h
 		if (corr_sr_del->pos-del->rc_anchor_start <= config.max_is && del->lc_anchor_end-get_sv_end(sr_hdr, corr_sr_del) <= config.max_is) {
 			if (bcf_has_filter(sr_hdr, corr_sr_del, (char*) "PASS")) {
 				bcf_update_info_int32(sr_hdr, corr_sr_del, "DISC_PAIRS", &del->disc_pairs, 1);
+				bcf_update_info_int32(sr_hdr, corr_sr_del, "DISC_PAIRS_MAXMAPQ", &del->disc_pairs_maxmapq, 1);
+				bcf_update_info_int32(sr_hdr, corr_sr_del, "DISC_PAIRS_TRUSTED", &del->disc_pairs_trusted, 1);
+				bcf_update_info_int32(sr_hdr, corr_sr_del, "DISC_PAIRS_HIGHMAPQ", &del->disc_pairs_high_mapq, 1);
 				deletions[i] = NULL;
 			} else { // if the SR deletion failed the filters, just borrow the coordinates (and the split reads)
 				int* clipped_reads = NULL, n = 0;
@@ -355,9 +465,11 @@ void merge_sr_dp(int id, int contig_id, std::string contig_name, bcf_hdr_t* sr_h
 
 			deletions[i] = (deletion_t*) indel;
 			indel->disc_pairs = del->disc_pairs;
+			indel->disc_pairs_maxmapq = del->disc_pairs_maxmapq;
+			indel->disc_pairs_trusted = del->disc_pairs_trusted;
+			indel->disc_pairs_high_mapq = del->disc_pairs_high_mapq;
 			indel->overlap = del->overlap;
 			indel->mismatches = del->mismatches;
-			indel->disc_pairs_maxmapq = del->disc_pairs_maxmapq;
 			deletions[i]->original_range = std::to_string(del->start) + "-" + std::to_string(del->end);
 			deletions[i]->remapped = true;
 		}
@@ -510,12 +622,46 @@ int main(int argc, char* argv[]) {
 
 	ctpl::thread_pool thread_pool1(config.threads);
 	std::vector<std::future<void> > futures;
+	std::vector<std::unordered_map<std::string, std::pair<std::string, int> > > mateseqs_w_mapq(contig_map.size());
 	for (size_t contig_id = 0; contig_id < contig_map.size(); contig_id++) {
 		std::string contig_name = contig_map.get_name(contig_id);
-		std::future<void> future = thread_pool1.push(cluster_dps, contig_id, contig_name);
+//		if (contig_name != "chr1") continue;
+
+		std::string fname = workdir + "/workspace/" + std::to_string(contig_id) + ".dc_mateseqs";
+		std::ifstream fin(fname);
+		std::string qname, read_seq; int mapq;
+		while (fin >> qname >> read_seq >> mapq) {
+			mateseqs_w_mapq[contig_id][qname] = {read_seq, mapq};
+		}
+
+		std::future<void> future = thread_pool1.push(cluster_dps, contig_id, contig_name, bam_fname, &mateseqs_w_mapq[contig_id]);
 		futures.push_back(std::move(future));
 	}
 	thread_pool1.stop(true);
+	for (int i = 0; i < futures.size(); i++) {
+		try {
+			futures[i].get();
+		} catch (char const* s) {
+			std::cout << s << std::endl;
+		}
+	}
+	futures.clear();
+
+	ctpl::thread_pool thread_pool2(config.threads);
+	int block_size = 100;
+	for (size_t contig_id = 0; contig_id < contig_map.size(); contig_id++) {
+		std::string contig_name = contig_map.get_name(contig_id);
+		std::vector<deletion_t*>& deletions = deletions_by_chr[contig_name];
+		if (deletions.empty()) continue;
+		for (int i = 0; i <= deletions.size()/block_size; i++) {
+			int start = i * block_size;
+			int end = std::min(start+block_size, (int) deletions.size());
+			std::future<void> future = thread_pool2.push(compute_trusted_disc_pairs, contig_name, &deletions_by_chr[contig_name],
+					&deletion_ra_reads_by_chr[contig_name], start, end, bam_fname, &mateseqs_w_mapq[contig_id]);
+			futures.push_back(std::move(future));
+		}
+	}
+	thread_pool2.stop(true);
 	for (int i = 0; i < futures.size(); i++) {
 		try {
 			futures[i].get();
@@ -541,13 +687,13 @@ int main(int argc, char* argv[]) {
 	bcf_close(sr_vcf_file);
 
 	// merge SR and DISC
-	ctpl::thread_pool thread_pool2(config.threads);
+	ctpl::thread_pool thread_pool3(config.threads);
 	for (size_t contig_id = 0; contig_id < contig_map.size(); contig_id++) {
 		std::string contig_name = contig_map.get_name(contig_id);
-		std::future<void> future = thread_pool2.push(merge_sr_dp, contig_id, contig_name, sr_vcf_hdr);
+		std::future<void> future = thread_pool3.push(merge_sr_dp, contig_id, contig_name, sr_vcf_hdr);
 		futures.push_back(std::move(future));
 	}
-	thread_pool2.stop(true);
+	thread_pool3.stop(true);
 	for (int i = 0; i < futures.size(); i++) {
 		try {
 			futures[i].get();
@@ -557,13 +703,13 @@ int main(int argc, char* argv[]) {
 	}
 	futures.clear();
 
-	ctpl::thread_pool thread_pool3(config.threads);
+	ctpl::thread_pool thread_pool4(config.threads);
 	for (size_t contig_id = 0; contig_id < contig_map.size(); contig_id++) {
 		std::string contig_name = contig_map.get_name(contig_id);
-		std::future<void> future = thread_pool3.push(add_filtering_info, contig_name, bam_fname);
+		std::future<void> future = thread_pool4.push(add_filtering_info, contig_name, bam_fname);
 		futures.push_back(std::move(future));
 	}
-	thread_pool3.stop(true);
+	thread_pool4.stop(true);
 	for (int i = 0; i < futures.size(); i++) {
 		try {
 			futures[i].get();
