@@ -41,31 +41,35 @@ std::vector<bool> find_vertices_in_cycles(std::vector<std::vector<edge_t> >& l_a
 	return in_cycle;
 }
 
+bool is_vertex_in_cycle(std::vector<std::vector<edge_t> >& l_adj, int i) {
+	std::stack<int> s;
+	for (edge_t& e : l_adj[i]) {
+		s.push(e.next);
+	}
+
+	// check if node i can reach itself - i.e., it is part of a cycle
+	std::vector<bool> visited(l_adj.size(), false);
+	bool i_in_cycle = false;
+	while (!s.empty()) {
+		int curr = s.top();
+		s.pop();
+		if (visited[curr]) continue;
+		visited[curr] = true;
+
+		if (curr == i) return true;
+		for (edge_t& e : l_adj[curr]) {
+			s.push(e.next);
+		}
+	}
+	return false;
+}
+
 std::vector<bool> find_vertices_in_cycles_fast(std::vector<std::vector<edge_t> >& l_adj) {
 
 	int n = l_adj.size();
 	std::vector<bool> in_cycle(n);
 	for (int i = 0; i < n; i++) {
-		// check if node i can reach itself - i.e., it is part of a cycle
-		std::stack<int> s;
-		for (edge_t& e : l_adj[i]) {
-			s.push(e.next);
-		}
-
-		std::vector<bool> visited(n, false);
-		bool i_in_cycle = false;
-		while (!i_in_cycle && !s.empty()) {
-			int curr = s.top();
-			s.pop();
-			if (visited[curr]) continue;
-			visited[curr] = true;
-
-			if (curr == i) i_in_cycle = true;
-			for (edge_t& e : l_adj[curr]) {
-				s.push(e.next);
-			}
-		}
-		in_cycle[i] = i_in_cycle;
+		in_cycle[i] = is_vertex_in_cycle(l_adj, i);
 	}
 	return in_cycle;
 }
@@ -260,6 +264,9 @@ void get_extension_reads(std::string contig_name, hts_pos_t target_start, hts_po
 
 		if (read_seqs.size() > max_reads) break;
 	}
+
+	bam_destroy1(read);
+	hts_itr_destroy(iter);
 }
 
 void break_cycles(std::vector<int>& out_edges, std::vector<std::vector<edge_t> >& l_adj, std::vector<std::vector<edge_t> >& l_adj_rev) {
@@ -293,6 +300,15 @@ void extend_consensus_to_right(consensus_t* consensus, hts_pos_t target_start, h
 	std::vector<int> out_edges(n);
 	std::vector<std::vector<edge_t> > l_adj(n), l_adj_rev(n);
 	build_graph_fwd(read_seqs, std::vector<int>(1, 0), out_edges, l_adj, l_adj_rev, config.read_len/2);
+
+	bool cycle_contains_0 = is_vertex_in_cycle(l_adj, 0);
+	if (cycle_contains_0) {
+		// remove all edges pointing to 0
+		for (std::vector<edge_t>& l_adj_i : l_adj) {
+			l_adj_i.erase(std::remove_if(l_adj_i.begin(), l_adj_i.end(), [](edge_t& e) {return e.next == 0;}), l_adj_i.end());
+		}
+		l_adj_rev[0].clear();
+	}
 
 	std::vector<int> rev_topological_order = find_rev_topological_order(n, out_edges, l_adj_rev);
 	bool cycle_at_0 = std::find(rev_topological_order.begin(), rev_topological_order.end(), 0) == rev_topological_order.end();
@@ -367,6 +383,15 @@ void extend_consensus_to_left(consensus_t* consensus, hts_pos_t target_start, ht
 	build_graph_rev(read_seqs, std::vector<int>(1, 0), out_edges, l_adj, l_adj_rev, config.read_len/2);
 
 	std::vector<int> rev_topological_order = find_rev_topological_order(n, out_edges, l_adj_rev);
+
+	bool cycle_contains_0 = is_vertex_in_cycle(l_adj, 0);
+	if (cycle_contains_0) {
+		// remove all edges pointing to 0
+		for (std::vector<edge_t>& l_adj_i : l_adj) {
+			l_adj_i.erase(std::remove_if(l_adj_i.begin(), l_adj_i.end(), [](edge_t& e) {return e.next == 0;}), l_adj_i.end());
+		}
+		l_adj_rev[0].clear();
+	}
 
 	bool cycle_at_0 = std::find(rev_topological_order.begin(), rev_topological_order.end(), 0) == rev_topological_order.end();
 	if (cycle_at_0) {
