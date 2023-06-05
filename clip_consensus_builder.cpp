@@ -631,8 +631,9 @@ void size_and_depth_filtering(int id, std::string contig_name) {
         if (dup->len() >= config.min_size_for_depth_filtering) duplications_w_cleanup.push_back(dup);
         else duplications_wo_cleanup.push_back(dup);
     }
-    depth_filter_dup_w_cleanup(contig_name, duplications_w_cleanup, bam_file, stats, config, max_allowed_frac_normalized, workdir);
-    depth_filter_dup(contig_name, duplications_wo_cleanup, bam_file, config.min_size_for_depth_filtering, config);
+//    depth_filter_dup_w_cleanup(contig_name, duplications_w_cleanup, bam_file, stats, config, max_allowed_frac_normalized, workdir);
+//    depth_filter_dup(contig_name, duplications_wo_cleanup, bam_file, config.min_size_for_depth_filtering, config);
+	depth_filter_dup(contig_name, duplications, bam_file, config.min_size_for_depth_filtering, config);
     end = std::chrono::steady_clock::now();
     out_mtx.lock();
     std::cout << "Finished dup depth computation for " << contig_name << ": " << std::chrono::duration_cast<std::chrono::seconds>(end - begin).count() << "[s]" << std::endl;
@@ -677,7 +678,6 @@ int main(int argc, char* argv[]) {
 		}
 
 		std::string contig_name = contig_map.get_name(contig_id);
-//        if (contig_name != "chr21") continue;
         std::future<void> future = thread_pool1.push(build_consensuses, contig_id, contig_name, &mateseqs_w_mapq[contig_id]);
         futures.push_back(std::move(future));
     }
