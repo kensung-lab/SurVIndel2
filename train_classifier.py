@@ -4,10 +4,11 @@ from sklearn.ensemble import RandomForestClassifier
 from collections import defaultdict
 import joblib
 
-cmd_parser = argparse.ArgumentParser(description='Filter reported SVs.')
+cmd_parser = argparse.ArgumentParser(description='Train ML model.')
 cmd_parser.add_argument('training_prefixes', help='Prefix of the training VCF and FP files.')
 cmd_parser.add_argument('svtype', help='SV type to filter.', choices=['DEL', 'DUP', 'INS', 'ALL'])
 cmd_parser.add_argument('outdir')
+cmd_parser.add_argument('--n-trees', type=int, default=5000, help='Number of trees in the random forest.')
 cmd_args = cmd_parser.parse_args()
 
 source_to_int = { "2SR" : 0, "2HSR" : 1, "HSR-SR" : 2, "SR-HSR" : 3, "1SR_LC" : 4, "1SR_RC" : 5,
@@ -197,11 +198,9 @@ for training_prefix in training_prefixes:
             training_data[source] = np.concatenate((training_data[source], vcf_training_data[source]))
             training_labels[source] = np.concatenate((training_labels[source], vcf_training_labels[source]))
 
-classifiers = dict()
 for sources in training_data:
-    classifier = RandomForestClassifier(n_estimators=5000, max_depth=15, n_jobs=-1)
+    classifier = RandomForestClassifier(n_estimators=cmd_args.n_trees, max_depth=15, n_jobs=-1)
     classifier.fit(training_data[sources], training_labels[sources])
-    classifiers[sources] = classifier
 
     #save model to outdir
     model_fname = cmd_args.outdir + "/" + sources + ".model"
