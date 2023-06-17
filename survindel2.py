@@ -9,7 +9,7 @@ MAX_READS = 1000
 GEN_DIST_SIZE = 100000
 MAX_ACCEPTABLE_IS = 20000
 
-VERSION = "1.1b"
+VERSION = "1.1"
 
 cmd_parser = argparse.ArgumentParser(description='SurVIndel2, a CNV caller.')
 cmd_parser.add_argument('bam_file', help='Input bam file.')

@@ -240,7 +240,6 @@ void find_indels_from_rc_lc_pairs(std::string contig_name, std::vector<consensus
 		}
 		std::vector<Interval<int>> compatible_lc_idxs = consensus_ivtree.findOverlapping(query_start, query_end);
 
-		std::stringstream log_ss;
 		for (auto& iv : compatible_lc_idxs) {
 			consensus_t* lc_anchor = lc_consensuses[iv.value];
 			if (lc_anchor->max_mapq < config.high_confidence_mapq && rc_anchor->max_mapq < config.high_confidence_mapq) continue;
@@ -249,34 +248,18 @@ void find_indels_from_rc_lc_pairs(std::string contig_name, std::vector<consensus
 			double max_mm_rate = (lc_anchor->is_hsr && rc_anchor->is_hsr) ? 0 : config.max_seq_error;
 
 			suffix_prefix_aln_t spa = aln_suffix_prefix(rc_anchor->consensus, lc_anchor->consensus, 1, -4, min_overlap);
-
-			log_ss << rc_anchor->name() << " " << rc_anchor->consensus << " " << rc_anchor->breakpoint << std::endl;
-			log_ss << lc_anchor->name() << " " << lc_anchor->consensus << " " << lc_anchor->breakpoint << std::endl;
-			log_ss << spa.overlap << " " << spa.score << " " << spa.mismatches << std::endl;
-			log_ss << spa.mismatch_rate() << " " << max_mm_rate << std::endl;
-
 			if (spa.overlap > 0 && spa.mismatch_rate() <= max_mm_rate) {
 				rc_lc_scored_pairs.push_back(pair_w_score_t(i, iv.value, spa.score, spa.mismatch_rate(), false));
-				log_ss << "ACCEPTED" << std::endl;
 			} else { // trim low quality (i.e., supported by less than 2 reads) bases
 				// TODO: investigate if we can use base qualities for this
 				std::string rc_consensus_trim = rc_anchor->consensus.substr(0, rc_anchor->consensus.length()-rc_anchor->lowq_clip_portion);
 				std::string lc_consensus_trim = lc_anchor->consensus.substr(lc_anchor->lowq_clip_portion);
-				log_ss << rc_anchor->name() << " " << rc_consensus_trim << " " << rc_anchor->breakpoint << " TRIMMED" << std::endl;
-				log_ss << lc_anchor->name() << " " << lc_consensus_trim << " " << lc_anchor->breakpoint << " TRIMMED" << std::endl;
 
 				suffix_prefix_aln_t spa = aln_suffix_prefix(rc_consensus_trim, lc_consensus_trim, 1, -4, min_overlap);
-				log_ss << spa.overlap << " " << spa.score << " " << spa.mismatches << std::endl;
-				log_ss << spa.mismatch_rate() << " " << max_mm_rate << std::endl;
 				if (spa.overlap > 0 && spa.mismatch_rate() <= max_mm_rate) {
 					rc_lc_scored_pairs.push_back(pair_w_score_t(i, iv.value, spa.score, spa.mismatch_rate(), true));
-					log_ss << "ACCEPTED" << std::endl;
 				}
 			}
-
-			log_mtx.lock();
-			flog << log_ss.str() << std::endl;
-			log_mtx.unlock();
 		}
 	}
 
@@ -547,23 +530,6 @@ void build_clip_consensuses(int id, int contig_id, std::string contig_name, std:
 	for (consensus_t* c : rc_consensuses) full_consensuses.push_back(c);
 	for (consensus_t* c : lc_consensuses) full_consensuses.push_back(c);
 	std::sort(full_consensuses.begin(), full_consensuses.end(), consensus_cmp);
-
-    // TODO: remove this logging when not needed anymore
-	log_mtx.lock();
-	for (consensus_t* consensus : rc_consensuses) {
-		flog << consensus->name() << " RC " << consensus->consensus << " " << consensus->breakpoint << " " << consensus->remap_boundary << std::endl;
-	}
-	for (consensus_t* consensus : lc_consensuses) {
-		flog << consensus->name() << " LC " << consensus->consensus << " " << consensus->breakpoint << " " << consensus->remap_boundary << std::endl;
-	}
-	for (consensus_t* consensus : rc_hsr_consensuses) {
-		flog << consensus->name() << " HSR_RC " << consensus->consensus << " " << consensus->breakpoint << " " << consensus->remap_boundary << std::endl;
-	}
-	for (consensus_t* consensus : lc_hsr_consensuses) {
-		flog << consensus->name() << " HSR_LC " << consensus->consensus << " " << consensus->breakpoint << " " << consensus->remap_boundary << std::endl;
-	}
-	flog << "N CONSENSUSES: " << contig_name << " " << rc_consensuses.size() << " " << lc_consensuses.size() << " " << rc_hsr_consensuses.size() << " " << lc_hsr_consensuses.size() << std::endl;
-	log_mtx.unlock();
 
 	// find RC-LC pairs
 	find_indels_from_rc_lc_pairs(contig_name, rc_consensuses, lc_consensuses, contig_deletions, contig_duplications, aligner);
