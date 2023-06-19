@@ -569,42 +569,23 @@ void size_and_depth_filtering(int id, std::string contig_name) {
 
     out_mtx.lock();
     std::vector<deletion_t*>& deletions = deletions_by_chr[contig_name];
-    std::cout << "Starting confidence intervals computation for " << contig_name << std::endl;
     out_mtx.unlock();
-    std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
     std::vector<double> temp1;
     std::vector<uint32_t> temp2;
     calculate_confidence_interval_size(contig_name, temp1, temp2, deletions, bam_file, config, stats);
-    std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
-    out_mtx.lock();
-    std::cout << "Finished confidence interval computation for " << contig_name << ": " << std::chrono::duration_cast<std::chrono::seconds>(end - begin).count() << "[s]" << std::endl;
-    std::cout << "Starting del depth computation for " << contig_name << std::endl;
-    out_mtx.unlock();
-    begin = std::chrono::steady_clock::now();
     depth_filter_del(contig_name, deletions, bam_file, config.min_size_for_depth_filtering, config);
-    end = std::chrono::steady_clock::now();
-    out_mtx.lock();
-    std::cout << "Finished del depth computation for " << contig_name << ": " << std::chrono::duration_cast<std::chrono::seconds>(end - begin).count() << "[s]" << std::endl;
-    out_mtx.unlock();
 
     out_mtx.lock();
-    std::cout << "Starting dup depth computation for " << contig_name << std::endl;
     std::vector<duplication_t*>& duplications = duplications_by_chr[contig_name];
     out_mtx.unlock();
-    begin = std::chrono::steady_clock::now();
-    std::vector<duplication_t*> duplications_w_cleanup, duplications_wo_cleanup;
-    for (duplication_t* dup : duplications) {
-        if (dup->len() >= config.min_size_for_depth_filtering) duplications_w_cleanup.push_back(dup);
-        else duplications_wo_cleanup.push_back(dup);
-    }
+//    std::vector<duplication_t*> duplications_w_cleanup, duplications_wo_cleanup;
+//    for (duplication_t* dup : duplications) {
+//        if (dup->len() >= config.min_size_for_depth_filtering) duplications_w_cleanup.push_back(dup);
+//        else duplications_wo_cleanup.push_back(dup);
+//    }
 //    depth_filter_dup_w_cleanup(contig_name, duplications_w_cleanup, bam_file, stats, config, max_allowed_frac_normalized, workdir);
 //    depth_filter_dup(contig_name, duplications_wo_cleanup, bam_file, config.min_size_for_depth_filtering, config);
 	depth_filter_dup(contig_name, duplications, bam_file, config.min_size_for_depth_filtering, config);
-    end = std::chrono::steady_clock::now();
-    out_mtx.lock();
-    std::cout << "Finished dup depth computation for " << contig_name << ": " << std::chrono::duration_cast<std::chrono::seconds>(end - begin).count() << "[s]" << std::endl;
-    out_mtx.unlock();
-
     release_bam_reader(bam_file);
 }
 

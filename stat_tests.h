@@ -212,14 +212,14 @@ void compute_cleaned_up_depth(duplication_t* dup, open_samFile_t* bam_file,
     hts_pos_t dup_tested_len = std::min(dup->end-dup->start, hts_pos_t(INDEL_TESTED_REGION_SIZE));
     std::sort(left_flanking_coverage, left_flanking_coverage+FLANKING_SIZE, std::greater<uint32_t>());
     int end = std::find(left_flanking_coverage, left_flanking_coverage+FLANKING_SIZE, 0)-left_flanking_coverage;
-    dup->med_left_flanking_cov = dup->left_flanking_cov = left_flanking_coverage[end/2];
+    dup->med_left_flanking_cov = left_flanking_coverage[end/2];
     std::sort(dup_left_coverage, dup_left_coverage+dup_tested_len, std::greater<uint32_t>());
-    dup->med_indel_left_cov = dup->indel_left_cov = dup_left_coverage[dup_tested_len/2];
+    dup->med_indel_left_cov = dup_left_coverage[dup_tested_len/2];
     std::sort(dup_right_coverage, dup_right_coverage+dup_tested_len, std::greater<uint32_t>());
-    dup->med_indel_right_cov = dup->indel_right_cov = dup_right_coverage[dup_tested_len/2];
+    dup->med_indel_right_cov = dup_right_coverage[dup_tested_len/2];
     std::sort(right_flanking_coverage, right_flanking_coverage+FLANKING_SIZE, std::greater<uint32_t>());
     end = std::find(right_flanking_coverage, right_flanking_coverage+FLANKING_SIZE, 0)-right_flanking_coverage;
-    dup->med_right_flanking_cov = dup->right_flanking_cov = right_flanking_coverage[end/2];
+    dup->med_right_flanking_cov = right_flanking_coverage[end/2];
 
     int ow_pairs = 0;
 
@@ -302,6 +302,7 @@ void depth_filter_dup_w_cleanup(std::string contig_name, std::vector<duplication
 
 			reads.push_back(new read_w_cached_info_t(read));
 		}
+		hts_itr_destroy(iter);
 
 		std::vector<read_w_cached_info_t*> curr_clean_reads = cleanup_reads(reads, merged_cleanup_ival.beg, merged_cleanup_ival.end,
 				merged_cleanup_ival.beg, merged_cleanup_ival.end, stats, config, max_allowed_frac_normalized, rng);
@@ -313,6 +314,7 @@ void depth_filter_dup_w_cleanup(std::string contig_name, std::vector<duplication
 
 		for (read_w_cached_info_t* rci : reads) delete rci;
 	}
+	bam_destroy1(read);
 
 	std::vector<Interval<int> > ivals;
 	for (int i = 0; i < merged_cleanup_ivals.size(); i++) {
@@ -364,134 +366,28 @@ void depth_filter_dup_w_cleanup(std::string contig_name, std::vector<duplication
 			delete rci;
 		}
 	}
-
-    // we have our population-wise distribution of AS differences
-    // any read with AS >= the median for its best bin is considered AS diff = 0
-    // from there, we compute how many reads we allow for each AS diff > 0, based on the population-wise distribution
-//    std::vector<char*> regions;
-//    for (duplication_t* dup : duplications) {
-//        std::stringstream ss;
-//        ss << contig_name << ":" << dup->start-FLANKING_SIZE << "-" << std::min(dup->start+INDEL_TESTED_REGION_SIZE, dup->end);
-//        char* region = new char[1000];
-//        strcpy(region, ss.str().c_str());
-//        regions.push_back(region);
-//
-//        ss.str(std::string());
-//        ss << contig_name << ":" << std::max(dup->end-INDEL_TESTED_REGION_SIZE, dup->start) << "-" << dup->end+FLANKING_SIZE;
-//        region = new char[1000];
-//        strcpy(region, ss.str().c_str());
-//        regions.push_back(region);
-//    }
-//    std::sort(duplications.begin(), duplications.end(), [](const duplication_t* dup1, const duplication_t* dup2) {
-//        return dup1->start < dup2->start;
-//    });
-//
-//    std::vector<std::pair<duplication_t*, int> > duplications_endsorted(duplications.size());
-//    for (int i = 0; i < duplications.size(); i++) {
-//        duplications_endsorted[i] = std::make_pair(duplications[i], i);
-//    }
-//    std::sort(duplications_endsorted.begin(), duplications_endsorted.end(),
-//              [] (std::pair<duplication_t*, int>& p1, std::pair<duplication_t*, int>& p2)
-//              { return p1.first->end < p2.first->end; });
-//
-//
-//    std::vector<std::vector<read_w_cached_info_t*> > dups_lf_reads(duplications.size()), dups_ldup_reads(duplications.size());
-//    std::vector<std::vector<read_w_cached_info_t*> > dups_rdup_reads(duplications.size()), dups_rf_reads(duplications.size());
-//    curr_pos = 0;
-//    int processed_dups = 0;
-//
-//    for (bam1_t* read : reads) {
-//        hts_pos_t rs = read->core.pos, re = bam_endpos(read);
-//        while (curr_pos < duplications.size() && rs > duplications[curr_pos]->end+FLANKING_SIZE) curr_pos++;
-//
-//        while (processed_dups < duplications.size() && rs > duplications_endsorted[processed_dups].first->end+FLANKING_SIZE) {
-//            int idx = duplications_endsorted[processed_dups].second;
-//            compute_cleaned_up_depth(duplications[idx], bam_file, dups_lf_reads[idx],
-//                                     dups_ldup_reads[idx], dups_rdup_reads[idx],
-//                                     dups_rf_reads[idx], stats, config, max_allowed_frac_normalized, workdir);
-//            clear_rcis(dups_lf_reads[idx],dups_ldup_reads[idx],dups_rdup_reads[idx],dups_rf_reads[idx]);
-//            processed_dups++;
-//        }
-//
-//        read_w_cached_info_t* rci = new read_w_cached_info_t(read);
-//        bool delete_rci = true;
-//        for (int i = curr_pos; i < duplications.size() && re > duplications[i]->start-FLANKING_SIZE; i++) {
-//            duplication_t* dup = duplications[i];
-//            hts_pos_t left_flanking_start = dup->start - FLANKING_SIZE, left_flanking_end = dup->start;
-//            hts_pos_t dup_left_start = dup->start, dup_left_end = std::min(dup->end, dup->start+INDEL_TESTED_REGION_SIZE);
-//            hts_pos_t dup_right_start = std::max(dup->start, dup->end-INDEL_TESTED_REGION_SIZE), dup_right_end = dup->end;
-//            hts_pos_t right_flanking_start = dup->end, right_flanking_end = dup->end + FLANKING_SIZE;
-//
-//            bool overlaps_lf = overlap(rs, re, left_flanking_start, left_flanking_end) > 0;
-//            bool overlaps_ldup = overlap(rs, re, dup_left_start, dup_left_end) > 0;
-//            bool overlaps_rdup = overlap(rs, re, dup_right_start, dup_right_end) > 0;
-//            bool overlaps_rf = overlap(rs, re, right_flanking_start, right_flanking_end) > 0;
-//
-//            if (overlaps_lf || overlaps_ldup || overlaps_rdup || overlaps_rf) {
-//                if (overlaps_lf) {
-//                    dups_lf_reads[i].push_back(rci);
-//                }
-//                if (overlaps_ldup) {
-//                    dups_ldup_reads[i].push_back(rci);
-//                }
-//                if (overlaps_rdup) {
-//                    dups_rdup_reads[i].push_back(rci);
-//                }
-//                if (overlaps_rf) {
-//                    dups_rf_reads[i].push_back(rci);
-//                }
-//                rci->references += overlaps_lf + overlaps_ldup + overlaps_rdup + overlaps_rf;
-//                delete_rci = false;
-//            }
-//        }
-//        if (delete_rci) delete rci;
-//    }
-//    while (processed_dups < duplications.size()) {
-//        int idx = duplications_endsorted[processed_dups].second;
-//        compute_cleaned_up_depth(duplications[idx], bam_file, dups_lf_reads[idx],
-//                                 dups_ldup_reads[idx], dups_rdup_reads[idx],
-//                dups_rf_reads[idx], stats, config, max_allowed_frac_normalized, workdir);
-//        clear_rcis(dups_lf_reads[idx],dups_ldup_reads[idx],dups_rdup_reads[idx],dups_rf_reads[idx]);
-//        processed_dups++;
-//    }
-//
-//    for (char* region : regions) {
-//        delete[] region;
-//    }
-//    hts_itr_destroy(iter);
-//    bam_destroy1(read);
 }
 
 const int FLANKING_SIZE = 5000, INDEL_TESTED_REGION_SIZE = 10000;
 
-void set_median_cov(indel_t* indel,
-		std::vector<uint32_t>& flanking_left_cov, std::vector<uint32_t>& indel_left_cov,
-		std::vector<uint32_t>& indel_right_cov, std::vector<uint32_t>& flanking_right_cov) {
+struct region_depth_t {
+	hts_pos_t start, end;
+	std::vector<uint32_t> depths, highmq_depths;
 
-	if (flanking_left_cov.size() == 1) return;
+	region_depth_t(hts_pos_t start, hts_pos_t end) : start(start), end(end), depths(std::vector<uint32_t>(end-start+1)),
+			highmq_depths(std::vector<uint32_t>(end-start+1)) {}
+};
+struct region_w_median_t {
+	hts_pos_t start, end;
+	int* median_target;
+	bool highmq_reads_only;
 
-	hts_pos_t indel_tested_len = std::min(indel->end-indel->start, hts_pos_t(INDEL_TESTED_REGION_SIZE));
-
-	if (flanking_left_cov.size() >= 1) {
-		std::sort(flanking_left_cov.begin(), flanking_left_cov.end());
-		indel->med_left_flanking_cov = flanking_left_cov[flanking_left_cov.size()/2];
-	}
-	if (indel_left_cov.size() >= 1) {
-		std::sort(indel_left_cov.begin(), indel_left_cov.end(), std::greater<uint32_t>());
-		indel->med_indel_left_cov = indel_left_cov[indel_tested_len/2];
-	}
-	if (indel_right_cov.size() >= 1) {
-		std::sort(indel_right_cov.begin(), indel_right_cov.end(), std::greater<uint32_t>());
-		indel->med_indel_right_cov = indel_right_cov[indel_tested_len/2];
-	}
-	if (flanking_right_cov.size() >= 1) {
-		std::sort(flanking_right_cov.begin(), flanking_right_cov.end());
-		indel->med_right_flanking_cov = flanking_right_cov[flanking_right_cov.size()/2];
-	}
-}
-
+	region_w_median_t(hts_pos_t start, hts_pos_t end, int* median_target, bool highmq_reads_only) :
+		start(start), end(end), median_target(median_target), highmq_reads_only(highmq_reads_only) {}
+};
 void depth_filter_indel(std::string contig_name, std::vector<indel_t*>& indels, open_samFile_t* bam_file, config_t& config) {
 
+	if (indels.empty()) return;
 	std::sort(indels.begin(), indels.end(), [](const indel_t* i1, const indel_t* i2) {
 		return i1->start < i2->start;
 	});
@@ -510,120 +406,76 @@ void depth_filter_indel(std::string contig_name, std::vector<indel_t*>& indels, 
         strcpy(region, ss.str().c_str());
         regions.push_back(region);
     }
-    std::sort(indels.begin(), indels.end(), [](const indel_t* indel1, const indel_t* indel2) {
-        return indel1->start < indel2->start;
-    });
 
-    std::vector<uint32_t> flanking_left_cov(indels.size()), indel_left_cov(indels.size());
-    std::vector<uint32_t> indel_right_cov(indels.size()), flanking_right_cov(indels.size());
+    std::vector<region_w_median_t> regions_of_interest;
+    for (indel_t* indel : indels) {
+    	regions_of_interest.emplace_back(std::max(hts_pos_t(0), indel->start - FLANKING_SIZE), indel->start, &(indel->med_left_flanking_cov), true);
+    	regions_of_interest.emplace_back(indel->start, std::min(indel->start + INDEL_TESTED_REGION_SIZE, indel->end), &(indel->med_indel_left_cov), true);
+    	regions_of_interest.emplace_back(std::max(indel->end - INDEL_TESTED_REGION_SIZE, indel->start), indel->end, &(indel->med_indel_right_cov), true);
+    	regions_of_interest.emplace_back(indel->end, indel->end + FLANKING_SIZE, &(indel->med_right_flanking_cov), true);
+    	if (indel->indel_type() == "DEL") {
+			regions_of_interest.emplace_back(indel->rc_anchor_start, indel->start, &(indel->med_left_cluster_cov), false);
+	    	regions_of_interest.emplace_back(indel->end, indel->lc_anchor_end, &(indel->med_right_cluster_cov), false);
+    	}
+    }
+    std::sort(regions_of_interest.begin(), regions_of_interest.end(), [](region_w_median_t& r1, region_w_median_t& r2) {return r1.start < r2.start;});
 
-	std::vector<std::vector<uint32_t> > flanking_left_cov_by_base(indels.size(), std::vector<uint32_t>(1,0)), indel_left_cov_by_base(indels.size(), std::vector<uint32_t>(1,0));
-	std::vector<std::vector<uint32_t> > indel_right_cov_by_base(indels.size(), std::vector<uint32_t>(1,0)), flanking_right_cov_by_base(indels.size(), std::vector<uint32_t>(1,0));
-	std::vector<std::vector<uint32_t> > left_cluster_cov_by_base(indels.size(), std::vector<uint32_t>(1,0)), right_cluster_cov_by_base(indels.size(), std::vector<uint32_t>(1,0));
+    std::vector<region_depth_t> merged_regions_of_interest;
+    auto curr_region = regions_of_interest[0];
+    for (const auto& region : regions_of_interest) {
+    	if (region.start - curr_region.end <= config.read_len) {
+    		curr_region.end = std::max(region.end, curr_region.end);
+    	} else {
+    		merged_regions_of_interest.emplace_back(curr_region.start, curr_region.end);
+    		curr_region = region;
+        }
+    }
+    merged_regions_of_interest.emplace_back(curr_region.start, curr_region.end);
 
     hts_itr_t* iter = sam_itr_regarray(bam_file->idx, bam_file->header, regions.data(), regions.size());
-    bam1_t* read = bam_init1();
-    int curr_pos = 0;
-    while (sam_itr_next(bam_file->file, iter, read) >= 0) {
+	bam1_t* read = bam_init1();
+	int curr_pos = 0;
+	while (sam_itr_next(bam_file->file, iter, read) >= 0) {
         if (is_unmapped(read) || is_mate_unmapped(read) || !is_primary(read)) continue;
-        if (!is_samechr(read)) continue; // do not count low qual reads and inter-chr pairs
+        if (!is_samechr(read)) continue;
 
         hts_pos_t rs = read->core.pos, re = bam_endpos(read);
-        while (curr_pos < indels.size() && indels[curr_pos]->end + FLANKING_SIZE < rs) {
-        	set_median_cov(indels[curr_pos], flanking_left_cov_by_base[curr_pos], indel_left_cov_by_base[curr_pos],
-        			indel_right_cov_by_base[curr_pos], flanking_right_cov_by_base[curr_pos]);
-			std::vector<uint32_t>().swap(flanking_left_cov_by_base[curr_pos]);
-			std::vector<uint32_t>().swap(indel_left_cov_by_base[curr_pos]);
-			std::vector<uint32_t>().swap(indel_right_cov_by_base[curr_pos]);
-			std::vector<uint32_t>().swap(flanking_right_cov_by_base[curr_pos]);
-        	curr_pos++;
-        }
+        while (curr_pos < merged_regions_of_interest.size() && rs > merged_regions_of_interest[curr_pos].end) curr_pos++;
+        if (curr_pos == merged_regions_of_interest.size()) break;
 
-        if (curr_pos == indels.size()) break;
+        auto& curr_region = merged_regions_of_interest[curr_pos];
 
-        hts_pos_t re_plus_fs = re + FLANKING_SIZE;
-        for (int i = curr_pos; i < indels.size() && indels[i]->start < re_plus_fs; i++) { // ==> indels[i]->start - FLANKING_REGION < re
-            indel_t* indel = indels[i];
-			hts_pos_t indel_tested_len = std::min(indel->end-indel->start, hts_pos_t(INDEL_TESTED_REGION_SIZE));
-
-			if (flanking_left_cov_by_base[i].size() == 1) {
-				flanking_left_cov_by_base[i] = std::vector<uint32_t>(FLANKING_SIZE);
-				indel_left_cov_by_base[i] = std::vector<uint32_t>(indel_tested_len);
-				indel_right_cov_by_base[i] = std::vector<uint32_t>(indel_tested_len);
-				flanking_right_cov_by_base[i] = std::vector<uint32_t>(FLANKING_SIZE);
-				left_cluster_cov_by_base[i] = std::vector<uint32_t>(std::max(hts_pos_t(0), indel->start-indel->rc_anchor_start+1));
-				right_cluster_cov_by_base[i] = std::vector<uint32_t>(std::max(hts_pos_t(0), indel->lc_anchor_end-indel->end+1));
+        if (overlap(curr_region.start, curr_region.end, rs, re)) {
+			int ov_start = std::max(0, int(rs-curr_region.start));
+			int ov_end = std::min(int(curr_region.depths.size()), int(re-curr_region.start));
+			for (int i = ov_start; i < ov_end; i++) {
+				curr_region.depths[i]++;
 			}
-
-			hts_pos_t b = std::max(hts_pos_t(0), rs-indel->rc_anchor_start), e = std::min(re-indel->rc_anchor_start, indel->start-indel->rc_anchor_start);
-			for (hts_pos_t j = b; j < e; j++) {
-				left_cluster_cov_by_base[i][j]++;
-			}
-			b = std::max(hts_pos_t(0), rs-indel->end), e = std::min(re-indel->end, indel->lc_anchor_end-indel->end);
-			for (hts_pos_t j = b; j < e; j++) {
-				right_cluster_cov_by_base[i][j]++;
-			}
-
-			if (read->core.qual < 20) continue;
-
-			hts_pos_t left_flanking_start = std::max(hts_pos_t(0), indel->start-FLANKING_SIZE);
-			hts_pos_t left_flanking_len = indel->start - left_flanking_start;
-			hts_pos_t indel_lcov_start = indel->start;
-			hts_pos_t indel_rcov_start = std::max(indel->start, indel->end-INDEL_TESTED_REGION_SIZE);
-			hts_pos_t right_flanking_start = indel->end;
-
-			b = std::max(hts_pos_t(0), rs-left_flanking_start), e = std::min(left_flanking_len, re-left_flanking_start);
-			for (hts_pos_t j = b; j < e; j++) {
-				flanking_left_cov_by_base[i][j]++;
-			}
-			if (e > b) flanking_left_cov[i] += e-b;
-
-			b = std::max(hts_pos_t(0), rs-indel_lcov_start), e = std::min(indel_tested_len, re-indel_lcov_start);
-			for (hts_pos_t j = b; j < e; j++) {
-				indel_left_cov_by_base[i][j]++;
-			}
-			if (e > b) indel_left_cov[i] += e-b;
-
-			b = std::max(hts_pos_t(0), rs-indel_rcov_start), e = std::min(indel_tested_len, re-indel_rcov_start);
-			for (hts_pos_t j = b; j < e; j++) {
-				indel_right_cov_by_base[i][j]++;
-			}
-			if (e > b) indel_right_cov[i] += e-b;
-
-			b = std::max(hts_pos_t(0), rs-right_flanking_start), e = std::min(hts_pos_t(FLANKING_SIZE), re-right_flanking_start);
-			for (hts_pos_t j = b; j < e; j++) {
-				flanking_right_cov_by_base[i][j]++;
-			}
-			if (e > b) flanking_right_cov[i] += e-b;
-        }
-    }
-
-    for (int i = curr_pos; i < indels.size(); i++) {
-    	set_median_cov(indels[i], flanking_left_cov_by_base[i], indel_left_cov_by_base[i],
-    	        		indel_right_cov_by_base[i], flanking_right_cov_by_base[i]);
-    }
-
-    for (int i = 0; i < indels.size(); i++) {
-        indel_t* indel = indels[i];
-		hts_pos_t indel_tested_len = std::min(indel->end-indel->start, hts_pos_t(INDEL_TESTED_REGION_SIZE));
-		indel_tested_len = std::max(hts_pos_t(1), indel_tested_len);
-
-		indel->left_flanking_cov = flanking_left_cov[i] / FLANKING_SIZE;
-        indel->indel_left_cov = indel_left_cov[i] / indel_tested_len;
-        indel->indel_right_cov = indel_right_cov[i] / indel_tested_len;
-        indel->right_flanking_cov = flanking_right_cov[i] / FLANKING_SIZE;
-
-
-		if (indel->indel_type() == "DEL") {
-			left_cluster_cov_by_base[i].resize(indel->start-indel->rc_anchor_start);
-			std::sort(left_cluster_cov_by_base[i].begin(), left_cluster_cov_by_base[i].end());
-			indel->med_left_cluster_cov = left_cluster_cov_by_base[i][left_cluster_cov_by_base[i].size()/2];
-
-			right_cluster_cov_by_base[i].resize(indel->lc_anchor_end-indel->end);
-			std::sort(right_cluster_cov_by_base[i].begin(), right_cluster_cov_by_base[i].end());
-			indel->med_right_cluster_cov = right_cluster_cov_by_base[i][right_cluster_cov_by_base[i].size()/2];
 		}
-    }
+
+        if (read->core.qual < 20) continue;
+
+        if (overlap(curr_region.start, curr_region.end, rs, re)) {
+        	int ov_start = std::max(0, int(rs-curr_region.start));
+        	int ov_end = std::min(int(curr_region.depths.size()), int(re-curr_region.start));
+        	for (int i = ov_start; i < ov_end; i++) {
+        		curr_region.highmq_depths[i]++;
+        	}
+        }
+	}
+
+	curr_pos = 0;
+	for (auto& region : regions_of_interest) {
+		while (curr_pos < merged_regions_of_interest.size() && region.start > merged_regions_of_interest[curr_pos].end) curr_pos++;
+
+		auto& merged_region = merged_regions_of_interest[curr_pos];
+		auto& merged_region_depths = region.highmq_reads_only ? merged_region.highmq_depths : merged_region.depths;
+		std::vector<uint32_t> depths(merged_region_depths.begin() + (region.start - merged_region.start),
+		                             merged_region_depths.begin() + (region.end - merged_region.start));
+		if (depths.empty()) continue;
+		std::sort(depths.begin(), depths.end());
+		*region.median_target = depths[depths.size()/2];
+	}
 
     for (char* region : regions) {
         delete[] region;
@@ -634,13 +486,31 @@ void depth_filter_indel(std::string contig_name, std::vector<indel_t*>& indels, 
 
 void depth_filter_del(std::string contig_name, std::vector<deletion_t*>& deletions, open_samFile_t* bam_file,
                       int min_size_for_depth_filtering, config_t& config) {
+	if (deletions.empty()) return;
+	mtx2.lock();
+	std::cout << "Starting del depth computation for " << contig_name << std::endl;
+	mtx2.unlock();
+	std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
     std::vector<indel_t*> testable_indels(deletions.begin(), deletions.end());
     depth_filter_indel(contig_name, testable_indels, bam_file, config);
+    std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
+    mtx2.lock();
+    std::cout << "Finished del depth computation for " << contig_name << ": " << std::chrono::duration_cast<std::chrono::seconds>(end - begin).count() << "[s]" << std::endl;
+    mtx2.unlock();
 }
 void depth_filter_dup(std::string contig_name, std::vector<duplication_t*>& duplications, open_samFile_t* bam_file,
                       int min_size_for_depth_filtering, config_t& config) {
+	if (duplications.empty()) return;
+	mtx2.lock();
+    std::cout << "Starting dup depth computation for " << contig_name << std::endl;
+    mtx2.unlock();
+    std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
     std::vector<indel_t*> testable_indels(duplications.begin(), duplications.end());
     depth_filter_indel(contig_name, testable_indels, bam_file, config);
+    std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
+    mtx2.lock();
+    std::cout << "Finished dup depth computation for " << contig_name << ": " << std::chrono::duration_cast<std::chrono::seconds>(end - begin).count() << "[s]" << std::endl;
+    mtx2.unlock();
 }
 
 int find_smallest_range_start(std::vector<int>& v, int range_size, int& min_cum) {
@@ -781,6 +651,13 @@ void calculate_cluster_region_disc(std::string contig_name, std::vector<duplicat
 void calculate_confidence_interval_size(std::string contig_name, std::vector<double>& global_crossing_isize_dist,
 										std::vector<uint32_t>& median_crossing_count_geqi_by_isize,
 										std::vector<deletion_t*>& deletions, open_samFile_t* bam_file, config_t config, stats_t stats) {
+
+	if (deletions.empty()) return;
+
+	mtx2.lock();
+	std::cout << "Starting confidence intervals computation for " << contig_name << std::endl;
+	mtx2.unlock();
+	std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
 
     std::sort(deletions.begin(), deletions.end(), [](const deletion_t* d1, const deletion_t* d2) {
         return (d1->start+d1->end)/2 < (d2->start+d2->end)/2;
@@ -937,6 +814,11 @@ void calculate_confidence_interval_size(std::string contig_name, std::vector<dou
     }
     hts_itr_destroy(iter);
     bam_destroy1(read);
+
+    std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
+    mtx2.lock();
+    std::cout << "Finished confidence interval computation for " << contig_name << ": " << std::chrono::duration_cast<std::chrono::seconds>(end - begin).count() << "[s]" << std::endl;
+    mtx2.unlock();
 }
 
 void calculate_ptn_ratio(std::string contig_name, std::vector<deletion_t*>& deletions, open_samFile_t* bam_file, config_t config) {

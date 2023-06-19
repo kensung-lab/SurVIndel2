@@ -58,7 +58,6 @@ struct indel_t {
     consensus_t* lc_consensus,* rc_consensus;
     double mm_rate = 0.0;
     std::string source;
-    int left_flanking_cov = 0, indel_left_cov = 0, indel_right_cov = 0, right_flanking_cov = 0;
     int med_left_flanking_cov = 0, med_indel_left_cov = 0, med_indel_right_cov = 0, med_right_flanking_cov = 0;
     int med_left_cluster_cov = 0, med_right_cluster_cov = 0;
     int full_junction_score = 0, lh_best1_junction_score = 0, rh_best1_junction_score = 0,
@@ -700,8 +699,6 @@ void del2bcf(bcf_hdr_t* hdr, bcf1_t* bcf_entry, char* chr_seq, std::string& cont
 		int_conv = del->remap_boundary_upper;
 		bcf_update_info_int32(hdr, bcf_entry, "REMAP_UB", &int_conv, 1);
 	}
-	int depths[] = {del->left_flanking_cov, del->indel_left_cov, del->indel_right_cov, del->right_flanking_cov};
-	bcf_update_info_int32(hdr, bcf_entry, "DEPTHS", depths, 4);
 	int median_depths[] = {del->med_left_flanking_cov, del->med_indel_left_cov, del->med_indel_right_cov, del->med_right_flanking_cov};
 	bcf_update_info_int32(hdr, bcf_entry, "MEDIAN_DEPTHS", median_depths, 4);
 	int cluster_depths[] = {del->med_left_cluster_cov, del->med_right_cluster_cov};
@@ -794,8 +791,6 @@ void dup2bcf(bcf_hdr_t* hdr, bcf1_t* bcf_entry, char* chr_seq, std::string& cont
 	} else {
 		bcf_update_info_string(hdr, bcf_entry, "SVTYPE", "DUP");
 	}
-	int depths[] = {dup->left_flanking_cov, dup->indel_left_cov, dup->indel_right_cov, dup->right_flanking_cov};
-	bcf_update_info_int32(hdr, bcf_entry, "DEPTHS", depths, 4);
 	int median_depths[] = {dup->med_left_flanking_cov, dup->med_indel_left_cov, dup->med_indel_right_cov, dup->med_right_flanking_cov};
 	bcf_update_info_int32(hdr, bcf_entry, "MEDIAN_DEPTHS", median_depths, 4);
 	bcf_update_info_int32(hdr, bcf_entry, "DISC_PAIRS", &dup->disc_pairs, 1);
