@@ -18,6 +18,8 @@ KSEQ_INIT(int, read)
 #include "libs/ssw_cpp.h"
 #include "libs/ssw.h"
 
+#include "simd_macros.h"
+
 struct consensus_t {
     bool left_clipped;
     int contig_id;
@@ -841,47 +843,127 @@ void dup2bcf(bcf_hdr_t* hdr, bcf1_t* bcf_entry, char* chr_seq, std::string& cont
 template<typename T>
 inline T max(T a, T b, T c) { return std::max(std::max(a,b), c); }
 
-int score(char ref_base, char query_base, int match_score, int mismatch_penalty) {
-	return (ref_base == query_base || query_base == 'N') ? match_score : mismatch_penalty;
+size_t gcd(size_t a, size_t b) {
+    return (b == 0) ? a : gcd(b, a % b);
+}
+size_t lcm(size_t a, size_t b) {
+    return a * b / gcd(a, b);
 }
 int* smith_waterman_gotoh(const char* ref, int ref_len, const char* read, int read_len,
 		int match_score, int mismatch_penalty, int gap_open, int gap_extend) {
+
 	const int INF = 1000000;
 
-	int* dab = new int[2*(read_len+1)];
-	int* dag = new int[2*(read_len+1)];
-	int* dgb = new int[2*(read_len+1)];
+	const int BYTES_PER_BLOCK = INT_PER_BLOCK * 4;
 
-	dab[0] = dag[0] = dgb[0] = 0;
-	dab[read_len+1] = dag[read_len+1] = -INF;
-	for (int i = 1; i <= read_len; i++) {
-		dab[i] = -INF;
-		dag[i] = gap_open + (i-1)*gap_extend;
-		dgb[i] = -INF;
-	}
+	// turn read_len+1 into a multiple of INT_PER_BLOCK
+	int read_len_rounded = (read_len+1+INT_PER_BLOCK-1)/INT_PER_BLOCK*INT_PER_BLOCK;
 
-	int* prefix_scores = new int[read_len];
-	std::fill(prefix_scores, prefix_scores+read_len, 0);
-	for (int i = 1; i <= ref_len; i++) {
-		int curr_idx_i = (i%2) * (read_len + 1);
-		int up_idx_i = ((i-1)%2) * (read_len + 1);
-		dgb[curr_idx_i] = gap_open + (i-1)*gap_extend;
+	const char* alphabet = "NACGT";
+	const int alphabet_size = strlen(alphabet);
+
+	int* H = NULL;
+	int* E = NULL;
+	int* F = NULL;
+	int* prefix_scores = NULL;
+
+	int** profile = new int*[4];
+	size_t alignment = lcm(BYTES_PER_BLOCK, sizeof(void*));
+	int p1 = posix_memalign(reinterpret_cast<void**>(&H), alignment, 2*read_len_rounded * sizeof(int));
+	int p2 = posix_memalign(reinterpret_cast<void**>(&E), alignment, 2*read_len_rounded * sizeof(int));
+	int p3 = posix_memalign(reinterpret_cast<void**>(&F), alignment, 2*read_len_rounded * sizeof(int));
+	int p4 = posix_memalign(reinterpret_cast<void**>(&prefix_scores), alignment, read_len_rounded * sizeof(int));
+	int p5 = 0;
+	for (int i = 0; i < alphabet_size; i++) {
+		p5 += posix_memalign(reinterpret_cast<void**>(&profile[i]), alignment, read_len_rounded * sizeof(int));
+		profile[i][0] = 0;
 		for (int j = 1; j <= read_len; j++) {
-			int curr_idx = curr_idx_i + j;
-			int left_idx = curr_idx-1;
-			int up_idx = up_idx_i + j;
-			int upleft_idx = up_idx-1;
-			int _score = score(ref[i-1], read[j-1], match_score, mismatch_penalty);
-			dab[curr_idx] = _score + max(dab[upleft_idx], dag[upleft_idx], dgb[upleft_idx], 0);
-			dag[curr_idx] = max(gap_open + dab[left_idx], gap_extend + dag[left_idx], gap_open + dgb[left_idx]);
-			dgb[curr_idx] = max(gap_open + dab[up_idx], gap_open + dag[up_idx], gap_extend + dgb[up_idx]);
-			prefix_scores[j-1] = std::max(prefix_scores[j-1], dab[curr_idx]);
+			profile[i][j] = (read[j-1] == alphabet[i]) ? match_score : mismatch_penalty;
+		}
+		for (int j = read_len+1; j < read_len_rounded; j++) {
+			profile[i][j] = 0;
 		}
 	}
+	if (p1 || p2 || p3 || p4 || p5) {
+		std::cerr << "Error allocating aligned memory of size " << (2*read_len_rounded * sizeof(int)) << std::endl;
+	}
 
-	delete[] dab;
-	delete[] dag;
-	delete[] dgb;
+	int* H_prev = H, *H_curr = H+read_len_rounded;
+	int* E_prev = E, *E_curr = E+read_len_rounded;
+	int* F_prev = F, *F_curr = F+read_len_rounded;
+
+	std::fill(H_prev, H_prev+read_len_rounded, 0);
+	std::fill(E_prev, E_prev+read_len_rounded, 0);
+	std::fill(F_prev, F_prev+read_len_rounded, 0);
+	H_curr[0] = F_curr[0] = E_curr[0] = 0;
+
+	SIMD_INT gap_open_v = SET1_INT(gap_open);
+	SIMD_INT gap_open_v_pos = SET1_INT(-gap_open);
+	SIMD_INT gap_extend_v = SET1_INT(gap_extend);
+	SIMD_INT zero_v = SET1_INT(0);
+
+	std::fill(prefix_scores, prefix_scores+read_len, 0);
+	for (int i = 1; i <= ref_len; i++) {
+		for (int j = 0; j < read_len_rounded; j += INT_PER_BLOCK) {
+			SIMD_INT H_up_v = LOAD_INT((SIMD_INT*)&H_prev[j]);
+			SIMD_INT E_up_v = LOAD_INT((SIMD_INT*)&E_prev[j]);
+			SIMD_INT F_up_v = LOAD_INT((SIMD_INT*)&F_prev[j]);
+			SIMD_INT m1 = ADD_INT(gap_open_v, MAX_INT(H_up_v, F_up_v));
+			SIMD_INT E_curr_v = MAX_INT(m1, ADD_INT(gap_extend_v, E_up_v));
+			STORE_INT((SIMD_INT*)&E_curr[j], E_curr_v);
+		}
+
+		int* ref_profile = profile[0];
+		switch (ref[i-1]) {
+			case 'A': ref_profile = profile[1]; break;
+			case 'C': ref_profile = profile[2]; break;
+			case 'G': ref_profile = profile[3]; break;
+			case 'T': ref_profile = profile[4]; break;
+		}
+		for (int j = 1; j <= read_len_rounded-INT_PER_BLOCK; j += INT_PER_BLOCK) {
+			SIMD_INT H_diag_v = LOAD_INT((SIMD_INT*)&H_prev[j-1]);
+			SIMD_INT F_diag_v = LOAD_INT((SIMD_INT*)&F_prev[j-1]);
+			SIMD_INT E_diag_v = LOAD_INT((SIMD_INT*)&E_prev[j-1]);
+			SIMD_INT m1 = MAX_INT(H_diag_v, F_diag_v);
+			m1 = MAX_INT(m1, E_diag_v);
+			SIMD_INT H_curr_v = MAX_INT(m1, zero_v);
+
+			SIMD_INT profile_curr = LOADU_INT((SIMD_INT*)&ref_profile[j]);
+			H_curr_v = ADD_INT(H_curr_v, profile_curr);
+
+			STOREU_INT((SIMD_INT*)&H_curr[j], H_curr_v);
+			
+			SIMD_INT prefix_v = LOAD_INT((SIMD_INT*)&prefix_scores[j-1]);
+			prefix_v = MAX_INT(prefix_v, H_curr_v);
+			STORE_INT((SIMD_INT*)&prefix_scores[j-1], prefix_v);
+		}
+		for (int j = read_len_rounded-INT_PER_BLOCK; j < read_len_rounded; j++) {
+			H_curr[j] = ref_profile[j] + max(H_prev[j-1], F_prev[j-1], E_prev[j-1], 0);
+			prefix_scores[j] = std::max(prefix_scores[j], H_curr[j]);
+		}
+
+		int j = 0;
+		for (; j < read_len_rounded; j += INT_PER_BLOCK) {
+			SIMD_INT H_curr_v = LOAD_INT((SIMD_INT*)&H_curr[j]);
+			auto cmp = CMP_INT(H_curr_v, gap_open_v_pos);
+			if (cmp) break;
+			STORE_INT((SIMD_INT*)&F_curr[j], zero_v);
+		}
+		if (j == 0) j = 1;
+		for (; j <= read_len; j++) {
+			F_curr[j] = std::max(gap_open + H_curr[j-1], gap_extend + F_curr[j-1]);
+		}
+
+		std::swap(H_prev, H_curr);
+		std::swap(E_prev, E_curr);
+		std::swap(F_prev, F_curr);
+	}
+
+	free(H);
+	free(E);
+	free(F);
+	for (int i = 0; i < alphabet_size; i++) free(profile[i]);
+	free(profile);
 
 	for (int i = 1; i < read_len; i++) {
 		prefix_scores[i] = std::max(prefix_scores[i], prefix_scores[i-1]);
