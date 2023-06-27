@@ -232,9 +232,23 @@ std::string assemble_cluster(hts_pos_t cluster_start, hts_pos_t cluster_end, std
 
 	std::vector<std::string> read_seqs;
 	std::vector<int> read_mapqs;
-	get_extension_reads(contig_name, cluster_start, cluster_end,
-			chr_seqs.get_len(contig_name), read_seqs, read_mapqs, mateseqs_w_mapq, config, bam_file, 5000);
-	if (read_seqs.size() > 5000) return "";
+	hts_pos_t contig_len = chr_seqs.get_len(contig_name);
+	hts_pair_pos_t cluster_ival;
+	cluster_ival.beg = cluster_start, cluster_ival.end = cluster_end;
+	std::vector<hts_pair_pos_t> cluster_ivals(1, cluster_ival);
+	std::vector<ext_read_t*> reads = get_extension_reads(contig_name, cluster_ivals, contig_len, mateseqs_w_mapq, config, bam_file);
+
+	std::vector<Interval<ext_read_t*>> it_ivals;
+	for (ext_read_t* ext_read : reads) {
+		Interval<ext_read_t*> it_ival(ext_read->start, ext_read->end, ext_read);
+		it_ivals.push_back(it_ival);
+	}
+	IntervalTree<ext_read_t*> candidate_reads_itree(it_ivals);
+	get_extension_read_seqs(candidate_reads_itree, read_seqs, read_mapqs, mateseqs_w_mapq, cluster_start, cluster_end, contig_len, config, 5000);
+
+	for (ext_read_t* read : reads) delete read;
+
+	if (read_seqs.size() > 5000 || read_seqs.empty()) return "";
 
 	int n = read_seqs.size();
 	std::unordered_set<std::string> cluster_read_seqs_set(cluster_read_seqs.begin(), cluster_read_seqs.end());
@@ -263,24 +277,26 @@ void compute_trusted_disc_pairs(int id, std::string contig_name, std::vector<del
 		std::vector<std::vector<std::string>>* deletion_ra_reads, int start, int end, std::string bam_fname,
 		std::unordered_map<std::string, std::pair<std::string, int> >* mateseqs_w_mapq) {
 
+	mtx.lock();
+	std::cout << "Computing good reads for " << contig_name << " " << start << "," << end << std::endl;
+	mtx.unlock();
+
 	StripedSmithWaterman::Aligner aligner(1, 4, 6, 1, true);
 	StripedSmithWaterman::Filter filter;
 	open_samFile_t* bam_file = open_samFile(bam_fname);
-		for (int i = start; i < deletions->size() && i < end; i++) {
-			deletion_t* del = deletions->at(i);
-			std::string assembled_contig = assemble_cluster(del->rc_anchor_start, del->start,
-					(*deletion_ra_reads)[i], contig_name, bam_file, *mateseqs_w_mapq);
-			StripedSmithWaterman::Alignment aln;
-			for (std::string read : deletion_ra_reads->at(i)) {
-				aligner.Align(read.c_str(), assembled_contig.c_str(), assembled_contig.length(), filter, &aln, 0);
-				if (!is_left_clipped(aln) && !is_right_clipped(aln)) {
-					del->disc_pairs_trusted++;
-				}
+	for (int i = start; i < deletions->size() && i < end; i++) {
+		deletion_t* del = deletions->at(i);
+		std::string assembled_contig = assemble_cluster(del->rc_anchor_start, del->start,
+				(*deletion_ra_reads)[i], contig_name, bam_file, *mateseqs_w_mapq);
+		StripedSmithWaterman::Alignment aln;
+		for (std::string read : deletion_ra_reads->at(i)) {
+			aligner.Align(read.c_str(), assembled_contig.c_str(), assembled_contig.length(), filter, &aln, 0);
+			if (!is_left_clipped(aln) && !is_right_clipped(aln)) {
+				del->disc_pairs_trusted++;
 			}
+		}
 	}
 	close_samFile(bam_file);
-
-	std::cout << "Good reads computed for " << contig_name << " " << start << "," << end << std::endl;
 }
 
 void cluster_dps(int id, int contig_id, std::string contig_name, std::string bam_fname,
@@ -625,7 +641,6 @@ int main(int argc, char* argv[]) {
 	std::vector<std::unordered_map<std::string, std::pair<std::string, int> > > mateseqs_w_mapq(contig_map.size());
 	for (size_t contig_id = 0; contig_id < contig_map.size(); contig_id++) {
 		std::string contig_name = contig_map.get_name(contig_id);
-//		if (contig_name != "chr1") continue;
 
 		std::string fname = workdir + "/workspace/" + std::to_string(contig_id) + ".dc_mateseqs";
 		std::ifstream fin(fname);

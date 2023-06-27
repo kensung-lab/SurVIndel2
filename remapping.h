@@ -65,8 +65,8 @@ indel_t* remap_consensus(std::string& consensus_seq, char* reference, int refere
 		}
 	}
 
-	delete[] prefix_scores;
-	delete[] suffix_scores;
+	free(prefix_scores);
+	free(suffix_scores);
 
 	char* consensus_cstr = new char[consensus_seq.length()+1];
 	strcpy(consensus_cstr, consensus_seq.c_str());

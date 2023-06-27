@@ -165,6 +165,16 @@ std::string get_sequence(bam1_t* r, bool fastq_seq = false) {
     if (fastq_seq && bam_is_rev(r)) rc(seq);
     return std::string(seq);
 }
+char* get_sequence_cstr(bam1_t* r, bool fastq_seq = false) {
+	char* seq = new char[r->core.l_qseq+1];
+	const uint8_t* bam_seq = bam_get_seq(r);
+	for (int i = 0; i < r->core.l_qseq; i++) {
+		seq[i] = get_base(bam_seq, i);
+	}
+	seq[r->core.l_qseq] = '\0';
+	if (fastq_seq && bam_is_rev(r)) rc(seq);
+	return seq;
+}
 
 std::string get_cigar_code(bam1_t* r) {
     const uint32_t* cigar = bam_get_cigar(r);

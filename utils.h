@@ -20,6 +20,78 @@ KSEQ_INIT(int, read)
 
 #include "simd_macros.h"
 
+
+struct config_t {
+
+    int threads, seed;
+    int min_is, max_is; // find a way to move this to stats_t
+    int min_sv_size;
+    int match_score;
+    int read_len; // this is not exactly "config", but it is more convenient to place it here
+    int min_clip_len;
+    double max_seq_error;
+    int max_clipped_pos_dist;
+    int min_size_for_depth_filtering;
+    int min_diff_hsr;
+    std::string sampling_regions, version;
+    bool log;
+
+    int clip_penalty = 7;
+    int min_score_diff = 15;
+    int high_confidence_mapq = 60;
+
+    void parse(std::string config_file) {
+        std::unordered_map<std::string, std::string> config_params;
+        std::ifstream fin(config_file);
+        std::string name, value;
+        while (fin >> name >> value) {
+            config_params[name] = value;
+        }
+        fin.close();
+
+        threads = std::stoi(config_params["threads"]);
+        seed = std::stoi(config_params["seed"]);
+        min_is = std::stoi(config_params["min_is"]);
+        max_is = std::stoi(config_params["max_is"]);
+        min_sv_size = std::stoi(config_params["min_sv_size"]);
+        match_score = std::stoi(config_params["match_score"]);
+        min_clip_len = std::stoi(config_params["min_clip_len"]);
+        read_len = std::stod(config_params["read_len"]);
+        max_seq_error = std::stod(config_params["max_seq_error"]);
+        max_clipped_pos_dist = std::stoi(config_params["max_clipped_pos_dist"]);
+        min_size_for_depth_filtering = std::stoi(config_params["min_size_for_depth_filtering"]);
+        min_diff_hsr = std::stoi(config_params["min_diff_hsr"]);
+        sampling_regions = config_params["sampling_regions"];
+        version = config_params["version"];
+        log = std::stoi(config_params["log"]);
+    }
+
+    std::string clip_penalty_padding() { return std::string(this->clip_penalty, 'N'); }
+};
+
+struct stats_t {
+    double avg_depth, lt_depth_stddev;
+    int min_depth, max_depth;
+    int pop_avg_crossing_is = 0;
+
+    void parse(std::string config_file) {
+        std::unordered_map<std::string, std::string> config_params;
+        std::ifstream fin(config_file);
+        std::string name, value;
+        while (fin >> name >> value) {
+            config_params[name] = value;
+        }
+        fin.close();
+
+        avg_depth = std::stod(config_params["avg_depth"]);
+        lt_depth_stddev = std::stod(config_params["lt_depth_stddev"]);
+        pop_avg_crossing_is = std::stoi(config_params["pop_avg_crossing_is"]);
+        min_depth = std::stoi(config_params["min_depth"]);
+        max_depth = std::stoi(config_params["max_depth"]);
+    }
+};
+
+
 struct consensus_t {
     bool left_clipped;
     int contig_id;
@@ -47,6 +119,52 @@ struct consensus_t {
         std::stringstream ss;
         ss << contig_id << "_" << breakpoint << "_" << dir() << "_" << clip_len << "_" << lowq_clip_portion << "_" << supp_clipped_reads;
         return ss.str();
+    }
+
+    hts_pos_t left_ext_target_start(config_t& config) {
+    	if (!left_clipped) {
+    		return start - config.max_is + config.read_len;
+    	} else {
+    		if (remap_boundary == consensus_t::LOWER_BOUNDARY_NON_CALCULATED) { // could not calculate the remap boundary, fall back to formula
+				return breakpoint - config.max_is - 2*consensus.length();
+			} else {
+				return remap_boundary;
+			}
+    	}
+    }
+    hts_pos_t left_ext_target_end(config_t& config) {
+		if (!left_clipped) {
+			return start;
+		} else {
+			if (remap_boundary == consensus_t::LOWER_BOUNDARY_NON_CALCULATED) { // could not calculate the remap boundary, fall back to formula
+				return breakpoint + config.max_is + 2*consensus.length();
+			} else {
+				return remap_boundary + config.max_is;
+			}
+		}
+	}
+
+    hts_pos_t right_ext_target_start(config_t& config) {
+		if (!left_clipped) {
+			if (remap_boundary == consensus_t::UPPER_BOUNDARY_NON_CALCULATED) {
+				return breakpoint - config.max_is - 2*consensus.length();
+			} else {
+				return remap_boundary - config.max_is;
+			}
+		} else {
+			return end;
+		}
+	}
+    hts_pos_t right_ext_target_end(config_t& config) {
+    	if (!left_clipped) {
+			if (remap_boundary == consensus_t::UPPER_BOUNDARY_NON_CALCULATED) {
+				return breakpoint + config.max_is + 2*consensus.length();
+			} else {
+				return remap_boundary;
+			}
+		} else {
+			return end + config.max_is - config.read_len;
+		}
     }
 
     int anchor_len() { return consensus.length() - clip_len; }
@@ -127,76 +245,6 @@ struct duplication_t : indel_t {
     hts_pos_t len() override { return ins_seq.length() + (end-start); }
 };
 
-
-struct config_t {
-
-    int threads, seed;
-    int min_is, max_is; // find a way to move this to stats_t
-    int min_sv_size;
-    int match_score;
-    int read_len; // this is not exactly "config", but it is more convenient to place it here
-    int min_clip_len;
-    double max_seq_error;
-    int max_clipped_pos_dist;
-    int min_size_for_depth_filtering;
-    int min_diff_hsr;
-    std::string sampling_regions, version;
-    bool log;
-
-    int clip_penalty = 7;
-    int min_score_diff = 15;
-    int high_confidence_mapq = 60;
-
-    void parse(std::string config_file) {
-        std::unordered_map<std::string, std::string> config_params;
-        std::ifstream fin(config_file);
-        std::string name, value;
-        while (fin >> name >> value) {
-            config_params[name] = value;
-        }
-        fin.close();
-
-        threads = std::stoi(config_params["threads"]);
-        seed = std::stoi(config_params["seed"]);
-        min_is = std::stoi(config_params["min_is"]);
-        max_is = std::stoi(config_params["max_is"]);
-        min_sv_size = std::stoi(config_params["min_sv_size"]);
-        match_score = std::stoi(config_params["match_score"]);
-        min_clip_len = std::stoi(config_params["min_clip_len"]);
-        read_len = std::stod(config_params["read_len"]);
-        max_seq_error = std::stod(config_params["max_seq_error"]);
-        max_clipped_pos_dist = std::stoi(config_params["max_clipped_pos_dist"]);
-        min_size_for_depth_filtering = std::stoi(config_params["min_size_for_depth_filtering"]);
-        min_diff_hsr = std::stoi(config_params["min_diff_hsr"]);
-        sampling_regions = config_params["sampling_regions"];
-        version = config_params["version"];
-        log = std::stoi(config_params["log"]);
-    }
-
-    std::string clip_penalty_padding() { return std::string(this->clip_penalty, 'N'); }
-};
-
-struct stats_t {
-    double avg_depth, lt_depth_stddev;
-    int min_depth, max_depth;
-    int pop_avg_crossing_is = 0;
-
-    void parse(std::string config_file) {
-        std::unordered_map<std::string, std::string> config_params;
-        std::ifstream fin(config_file);
-        std::string name, value;
-        while (fin >> name >> value) {
-            config_params[name] = value;
-        }
-        fin.close();
-
-        avg_depth = std::stod(config_params["avg_depth"]);
-        lt_depth_stddev = std::stod(config_params["lt_depth_stddev"]);
-        pop_avg_crossing_is = std::stoi(config_params["pop_avg_crossing_is"]);
-        min_depth = std::stoi(config_params["min_depth"]);
-        max_depth = std::stoi(config_params["max_depth"]);
-    }
-};
 
 struct tandem_rep_t {
 
@@ -867,7 +915,7 @@ int* smith_waterman_gotoh(const char* ref, int ref_len, const char* read, int re
 	int* F = NULL;
 	int* prefix_scores = NULL;
 
-	int** profile = new int*[4];
+	int** profile = new int*[alphabet_size];
 	size_t alignment = lcm(BYTES_PER_BLOCK, sizeof(void*));
 	int p1 = posix_memalign(reinterpret_cast<void**>(&H), alignment, 2*read_len_rounded * sizeof(int));
 	int p2 = posix_memalign(reinterpret_cast<void**>(&E), alignment, 2*read_len_rounded * sizeof(int));
@@ -963,7 +1011,7 @@ int* smith_waterman_gotoh(const char* ref, int ref_len, const char* read, int re
 	free(E);
 	free(F);
 	for (int i = 0; i < alphabet_size; i++) free(profile[i]);
-	free(profile);
+	delete[] profile;
 
 	for (int i = 1; i < read_len; i++) {
 		prefix_scores[i] = std::max(prefix_scores[i], prefix_scores[i-1]);

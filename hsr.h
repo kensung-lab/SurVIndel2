@@ -15,26 +15,31 @@ extern config_t config;
 const int EXTRA_SEQ = 10;
 
 
-indel_t* remap_rc_cluster(consensus_t* consensus, std::string contig_name,
-		char* contig_seq, hts_pos_t contig_len, StripedSmithWaterman::Aligner& aligner, open_samFile_t* bam_file,
+indel_t* remap_rc_cluster(consensus_t* consensus, IntervalTree<ext_read_t*>& candidate_reads_itree, std::string contig_name,
+		char* contig_seq, hts_pos_t contig_len, StripedSmithWaterman::Aligner& aligner,
 		std::unordered_map<std::string, std::pair<std::string, int> >& mateseqs_w_mapq) {
 
+	hts_pos_t left_ext_target_start = consensus->left_ext_target_start(config);
+	hts_pos_t left_ext_target_end = consensus->left_ext_target_end(config);
+
+	hts_pos_t right_ext_target_start = consensus->right_ext_target_start(config);
+	hts_pos_t right_ext_target_end = consensus->right_ext_target_end(config);
+
 	int old_consensus_len = consensus->consensus.length();
-	extend_rc_consensus(consensus, contig_name, contig_len, config, bam_file, mateseqs_w_mapq);
+	extend_consensus_to_right(consensus, candidate_reads_itree, right_ext_target_start, right_ext_target_end, contig_name, contig_len, config, mateseqs_w_mapq);
 	int r_ext_len = consensus->consensus.length() - old_consensus_len;
 
 	old_consensus_len = consensus->consensus.length();
-	extend_consensus_to_left(consensus, consensus->start-config.max_is+config.read_len, consensus->start, contig_name, contig_len,
-			config, bam_file, mateseqs_w_mapq);
+	extend_consensus_to_left(consensus, candidate_reads_itree, left_ext_target_start, left_ext_target_end, contig_name, contig_len, config, mateseqs_w_mapq);
 	int l_ext_len = consensus->consensus.length() - old_consensus_len;
 
 	hts_pos_t ref_start = std::max(hts_pos_t(0), consensus->start - EXTRA_SEQ);
 	hts_pos_t ref_end = std::min(consensus->end + config.max_is, contig_len);
 	hts_pos_t ref_len = ref_end - ref_start;
 
-    hts_pos_t remap_target_end = consensus->remap_boundary;
+	hts_pos_t remap_target_end = consensus->remap_boundary;
 	hts_pos_t remap_target_start = consensus->remap_boundary - config.max_is;
-	if (remap_target_end == consensus_t::UPPER_BOUNDARY_NON_CALCULATED) {
+	if (consensus->remap_boundary == consensus_t::UPPER_BOUNDARY_NON_CALCULATED) {
 		remap_target_start = consensus->breakpoint - config.max_is - 2*consensus->consensus.length();
 		remap_target_end = consensus->breakpoint + config.max_is + 2*consensus->consensus.length();
 	}
@@ -53,17 +58,22 @@ indel_t* remap_rc_cluster(consensus_t* consensus, std::string contig_name,
     return indel;
 }
 
-indel_t* remap_lc_cluster(consensus_t* consensus, std::string contig_name,
-		char* contig_seq, hts_pos_t contig_len, StripedSmithWaterman::Aligner& aligner, open_samFile_t* bam_file,
+indel_t* remap_lc_cluster(consensus_t* consensus, IntervalTree<ext_read_t*>& candidate_reads_itree, std::string contig_name,
+		char* contig_seq, hts_pos_t contig_len, StripedSmithWaterman::Aligner& aligner,
 		std::unordered_map<std::string, std::pair<std::string, int> >& mateseqs_w_mapq) {
 
+	hts_pos_t left_ext_target_start = consensus->left_ext_target_start(config);
+	hts_pos_t left_ext_target_end = consensus->left_ext_target_end(config);
+
+	hts_pos_t right_ext_target_start = consensus->right_ext_target_start(config);
+	hts_pos_t right_ext_target_end = consensus->right_ext_target_end(config);
+
 	int old_consensus_len = consensus->consensus.length();
-	extend_lc_consensus(consensus, contig_name, contig_len, config, bam_file, mateseqs_w_mapq);
+	extend_consensus_to_left(consensus, candidate_reads_itree, left_ext_target_start, left_ext_target_end, contig_name, contig_len, config, mateseqs_w_mapq);
 	int l_ext_len = consensus->consensus.length() - old_consensus_len;
 
 	old_consensus_len = consensus->consensus.length();
-	extend_consensus_to_right(consensus, consensus->end, consensus->end+config.max_is-config.read_len, contig_name,
-			contig_len, config, bam_file, mateseqs_w_mapq);
+	extend_consensus_to_right(consensus, candidate_reads_itree, right_ext_target_start, right_ext_target_end, contig_name, contig_len, config, mateseqs_w_mapq);
 	int r_ext_len = consensus->consensus.length() - old_consensus_len;
 
 	hts_pos_t ref_end = std::min(consensus->end + EXTRA_SEQ, contig_len);
@@ -72,7 +82,7 @@ indel_t* remap_lc_cluster(consensus_t* consensus, std::string contig_name,
 
 	hts_pos_t remap_target_start = consensus->remap_boundary;
 	hts_pos_t remap_target_end = consensus->remap_boundary + config.max_is;
-	if (remap_target_start == consensus_t::LOWER_BOUNDARY_NON_CALCULATED) { // could not calculate the remap boundary, fall back to formula
+	if (consensus->remap_boundary == consensus_t::LOWER_BOUNDARY_NON_CALCULATED) { // could not calculate the remap boundary, fall back to formula
 		remap_target_start = consensus->breakpoint - config.max_is - 2*consensus->consensus.length();
 		remap_target_end = consensus->breakpoint + config.max_is + 2*consensus->consensus.length();
 	}
