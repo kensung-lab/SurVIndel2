@@ -116,6 +116,8 @@ void remove_hsr_overlapping_clipped(std::vector<consensus_t*>& hsr_consensuses, 
 		// clipped_consensuses[i] must be same clip direction as cluster and breakpoint must be the smallest s.t. >= cluster.start
 		if (i >= clipped_consensuses.size() || clipped_consensuses[i]->breakpoint > c->end) {
 			kept_consensus.push_back(c);
+		} else {
+			delete c;
 		}
 	}
 	kept_consensus.swap(hsr_consensuses);

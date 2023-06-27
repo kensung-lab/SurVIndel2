@@ -175,7 +175,7 @@ struct indel_t {
     hts_pos_t start, end;
     hts_pos_t rc_anchor_start, lc_anchor_end; // start of the rc anchor and lc anchor end
     int disc_pairs = 0, disc_pairs_trusted = 0, disc_pairs_high_mapq = 0, disc_pairs_maxmapq = 0;
-    consensus_t* lc_consensus,* rc_consensus;
+    consensus_t* lc_consensus = NULL,* rc_consensus = NULL;
     double mm_rate = 0.0;
     std::string source;
     int med_left_flanking_cov = 0, med_indel_left_cov = 0, med_indel_right_cov = 0, med_right_flanking_cov = 0;

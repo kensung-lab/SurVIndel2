@@ -185,6 +185,7 @@ void build_hsr_consensuses(int id, int contig_id, std::string contig_name, std::
 		}
 		for (bam_redux_t* r : cluster_v) delete r;
     }
+    for (bam1_t* r : rc_cluster) bam_destroy1(r);
     if (lc_cluster.size() >= 3) {
 		std::vector<bam_redux_t*> cluster_v;
 		for (bam1_t* r : lc_cluster) cluster_v.push_back(new bam_redux_t(r));
@@ -196,6 +197,7 @@ void build_hsr_consensuses(int id, int contig_id, std::string contig_name, std::
 		}
 		for (bam_redux_t* r : cluster_v) delete r;
     }
+    for (bam1_t* r : lc_cluster) bam_destroy1(r);
 
     StripedSmithWaterman::Aligner aligner(2, 2, 4, 1, true);
     StripedSmithWaterman::Filter filter;
@@ -458,7 +460,10 @@ void find_indels_from_unpaired_consensuses(int id, std::string contig_name, std:
 					aligner, *mateseqs_w_mapq);
 		}
 
-		if (smallest_indel == NULL) continue;
+		if (smallest_indel == NULL) {
+			delete consensus;
+			continue;
+		}
 		if (smallest_indel->indel_type() == "DEL") {
 			local_dels.push_back((deletion_t*) smallest_indel);
 		} else {
@@ -696,11 +701,24 @@ int main(int argc, char* argv[]) {
 	}
 	futures.clear();
 
-	auto rm_small_indels = [](indel_t* indel) { return indel->len() < config.min_sv_size; };
 	for (size_t contig_id = 0; contig_id < contig_map.size(); contig_id++) {
 		std::string contig_name = contig_map.get_name(contig_id);
-		deletions_by_chr[contig_name].erase(std::remove_if(deletions_by_chr[contig_name].begin(), deletions_by_chr[contig_name].end(), rm_small_indels), deletions_by_chr[contig_name].end());
-		duplications_by_chr[contig_name].erase(std::remove_if(duplications_by_chr[contig_name].begin(), duplications_by_chr[contig_name].end(), rm_small_indels), duplications_by_chr[contig_name].end());
+		auto& deletions = deletions_by_chr[contig_name];
+		for (int i = 0; i < deletions.size(); i++) {
+			if (deletions[i]->len() < config.min_sv_size) {
+				delete deletions[i];
+				deletions[i] = NULL;
+			}
+		}
+		deletions_by_chr[contig_name].erase(std::remove(deletions_by_chr[contig_name].begin(), deletions_by_chr[contig_name].end(), (deletion_t*) NULL), deletions_by_chr[contig_name].end());
+		auto& duplications = duplications_by_chr[contig_name];
+		for (int i = 0; i < duplications.size(); i++) {
+			if (duplications[i]->len() < config.min_sv_size) {
+				delete duplications[i];
+				duplications[i] = NULL;
+			}
+		}
+		duplications_by_chr[contig_name].erase(std::remove(duplications_by_chr[contig_name].begin(), duplications_by_chr[contig_name].end(), (duplication_t*) NULL), duplications_by_chr[contig_name].end());
 	}
 
     // create VCF out files
@@ -793,6 +811,9 @@ int main(int argc, char* argv[]) {
 
             del2bcf(out_vcf_header, bcf_entry, chr_seqs.get_seq(contig_name), contig_name, del, filters);
             bcf_entries[contig_name].push_back(bcf_dup(bcf_entry));
+            delete del->rc_consensus;
+            delete del->lc_consensus;
+            delete del;
         }
     }
 
@@ -839,6 +860,9 @@ int main(int argc, char* argv[]) {
 
             dup2bcf(out_vcf_header, bcf_entry, chr_seqs.get_seq(contig_name), contig_name, dup, filters);
             bcf_entries[contig_name].push_back(bcf_dup(bcf_entry));
+            delete dup->rc_consensus;
+            delete dup->lc_consensus;
+            delete dup;
         }
     }
 
