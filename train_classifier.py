@@ -99,7 +99,7 @@ def record_to_features(record, min_depth, avg_depth, max_depth):
     disc_pairs = float(info['DISC_PAIRS'])/avg_depth
     disc_pairs_highmapq = float(get_value(info, 'DISC_PAIRS_HIGHMAPQ', 0))/avg_depth
     disc_pairs_maxmapq_ratio = disc_pairs_highmapq/max(1, disc_pairs)
-    disc_pairs_trusted = float(get_value(info, 'DISC_PAIRS_TRUSTED', 0))/avg_depth
+    disc_pairs_trusted = 0 #float(get_value(info, 'DISC_PAIRS_TRUSTED', 0))/avg_depth
     disc_pairs_trusted_ratio = disc_pairs_trusted/max(1, disc_pairs)
     disc_pairs_maxmapq = float(get_value(info, 'DISC_PAIRS_MAXMAPQ', 60))
     disc_pair_surrounding = [float(x)/avg_depth for x in info['DISC_PAIRS_SURROUNDING']]

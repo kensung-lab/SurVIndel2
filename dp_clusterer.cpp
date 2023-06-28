@@ -665,16 +665,16 @@ int main(int argc, char* argv[]) {
 	ctpl::thread_pool thread_pool2(config.threads);
 	int block_size = 100;
 	for (size_t contig_id = 0; contig_id < contig_map.size(); contig_id++) {
-		std::string contig_name = contig_map.get_name(contig_id);
-		std::vector<deletion_t*>& deletions = deletions_by_chr[contig_name];
-		if (deletions.empty()) continue;
-		for (int i = 0; i <= deletions.size()/block_size; i++) {
-			int start = i * block_size;
-			int end = std::min(start+block_size, (int) deletions.size());
-			std::future<void> future = thread_pool2.push(compute_trusted_disc_pairs, contig_name, &deletions_by_chr[contig_name],
-					&deletion_ra_reads_by_chr[contig_name], start, end, bam_fname, &mateseqs_w_mapq[contig_id]);
-			futures.push_back(std::move(future));
-		}
+//		std::string contig_name = contig_map.get_name(contig_id);
+//		std::vector<deletion_t*>& deletions = deletions_by_chr[contig_name];
+//		if (deletions.empty()) continue;
+//		for (int i = 0; i <= deletions.size()/block_size; i++) {
+//			int start = i * block_size;
+//			int end = std::min(start+block_size, (int) deletions.size());
+//			std::future<void> future = thread_pool2.push(compute_trusted_disc_pairs, contig_name, &deletions_by_chr[contig_name],
+//					&deletion_ra_reads_by_chr[contig_name], start, end, bam_fname, &mateseqs_w_mapq[contig_id]);
+//			futures.push_back(std::move(future));
+//		}
 	}
 	thread_pool2.stop(true);
 	for (int i = 0; i < futures.size(); i++) {

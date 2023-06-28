@@ -607,8 +607,8 @@ bcf_hdr_t* generate_vcf_header(chr_seqs_map_t& contigs, std::string& sample_name
 	const char* disc_pairs_tag = "##INFO=<ID=DISC_PAIRS,Number=1,Type=Integer,Description=\"Discordant pairs supporting the SV.\">";
 	bcf_hdr_add_hrec(header, bcf_hdr_parse_line(header, disc_pairs_tag, &len));
 
-	const char* disc_pairs_trusted_tag = "##INFO=<ID=DISC_PAIRS_TRUSTED,Number=1,Type=Integer,Description=\"Discordant pairs likely to be aligned to the correct location.\">";
-	bcf_hdr_add_hrec(header, bcf_hdr_parse_line(header, disc_pairs_trusted_tag, &len));
+//	const char* disc_pairs_trusted_tag = "##INFO=<ID=DISC_PAIRS_TRUSTED,Number=1,Type=Integer,Description=\"Discordant pairs likely to be aligned to the correct location.\">";
+//	bcf_hdr_add_hrec(header, bcf_hdr_parse_line(header, disc_pairs_trusted_tag, &len));
 
 	const char* disc_pairs_hmapq_tag = "##INFO=<ID=DISC_PAIRS_HIGHMAPQ,Number=1,Type=Integer,Description=\"HDiscordant pairs with high MAPQ supporting the SV.\">";
 	bcf_hdr_add_hrec(header, bcf_hdr_parse_line(header, disc_pairs_hmapq_tag, &len));
