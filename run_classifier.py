@@ -188,11 +188,14 @@ def parse_vcf(vcf_fname, stats_fname, fp_fname, tolerate_no_fps = False):
 
 test_data, test_labels, test_variant_ids = parse_vcf(cmd_args.in_vcf, cmd_args.stats, "XXX", tolerate_no_fps = True)
 
-def write_vcf(vcf_reader, pred_variant_ids, fname):
+def write_vcf(vcf_reader, vcf_header, pred_variant_ids, fname):
     pred_variant_ids = set(pred_variant_ids)
-    vcf_writer = pysam.VariantFile(fname, 'w', header=vcf_reader.header)
+    vcf_writer = pysam.VariantFile(fname, 'w', header=vcf_header)
     for record in vcf_reader.fetch():
         if record.id in pred_variant_ids:
+            record.info['HARD_FILTERS'] = ",".join(record.filter.keys())
+            record.filter.clear()
+            record.filter.add('PASS')
             vcf_writer.write(record)
     vcf_writer.close()
 
@@ -208,4 +211,6 @@ pred_variant_ids = np.concatenate(pred_variant_ids)
 
 # write the predictions to a VCF file
 vcf_reader = pysam.VariantFile(cmd_args.in_vcf)
-write_vcf(vcf_reader, pred_variant_ids, cmd_args.out_vcf)
+header = vcf_reader.header
+header.add_line('##INFO=<ID=HARD_FILTERS,Number=.,Type=String,Description="PASS or not according to hard filters.">')
+write_vcf(vcf_reader, header, pred_variant_ids, cmd_args.out_vcf)
