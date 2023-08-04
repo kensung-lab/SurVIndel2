@@ -136,132 +136,145 @@ std::string build_full_consensus_seq(std::vector<bam_redux_t*>& clipped) {
     return std::string(consensus);
 }
 
-consensus_t* build_full_consensus(int contig_id, std::vector<bam_redux_t*>& clipped, bool left_clipped) {
-    if (clipped.size() <= 2) return NULL;
+std::vector<consensus_t*> build_full_consensus(int contig_id, std::vector<bam_redux_t*> clipped, bool left_clipped) {
+
+	std::vector<consensus_t*> consensuses;
+
+    if (clipped.size() <= 2) return consensuses;
 
     std::sort(clipped.begin(), clipped.end(), [](bam_redux_t* r1, bam_redux_t* r2) {
         return r1->unclipped_start() < r2->unclipped_start();
     });
-    if (clipped[0]->unclipped_start() < 0) return NULL;
+    if (clipped[0]->unclipped_start() < 0) return consensuses;
 
-    std::string consensus_seq = build_full_consensus_seq(clipped);
-    if (consensus_seq == "") return NULL;
+    while (!clipped.empty()) {
+		std::string consensus_seq = build_full_consensus_seq(clipped);
+		if (consensus_seq == "") return consensuses;
 
-    std::vector<bam_redux_t*> accepted_reads;
-    std::vector<std::pair<int, int> > old_and_new_scores;
-    for (bam_redux_t* r : clipped) {
-    	int mm = 0;
-        int mm_clip = 0; // mismatches in the clipped portion only
+		std::vector<bam_redux_t*> accepted_reads, remaining_reads;
+		std::vector<std::pair<int, int> > old_and_new_scores;
+		for (bam_redux_t* r : clipped) {
+			int mm = 0;
+			int mm_clip = 0; // mismatches in the clipped portion only
 
-        // filter reads with too many differences from the consensus_seq
-        hts_pos_t offset = get_start_offset(clipped[0], r);
-        hts_pos_t clip_start = left_clipped ? 0 : r->seq_len() - r->right_clip_size;
-        hts_pos_t clip_end = left_clipped ? r->left_clip_size : r->seq_len();
-        for (int i = 0; i < r->seq_len(); i++) {
-            if (i+offset >= consensus_seq.length()) {
-                std::cerr << "WARNING: consensus_seq out of boundary." << std::endl;
-            }
-            if (consensus_seq[i + offset] != get_base(r->seq.data(), i)) {
-                mm++;
-                if (i >= clip_start && i < clip_end) mm_clip++;
-            }
-        }
-        if (mm <= std::ceil(config.max_seq_error * consensus_seq.length()) &&
-            mm_clip <= (clip_end-clip_start)/2) {
-            /* this is meant to fix a corner case where the clip is very short, and completely different from
-             * the consensus_seq. However, the rest of the reads is the same as the consensus_seq, therefore the mismatches
-             * accumulated in the clip are not enough to discard the read, despite the read not belonging to the cluster.
-             * We are being very permissive (i.e. we allow up to 50% mismatches in the clip) because
-             * 1. Illumina is known to accumulate sequencing errors at the 3' tail, which is the clipped portion in about
-             * 50% of the cases
-             * 2. Especially for short clips, if we used config.max_seq_error as for the rest of the consensus_seq, 2-3 mismatches
-             * would already discard them
-             */
+			// filter reads with too many differences from the consensus_seq
+			hts_pos_t offset = get_start_offset(clipped[0], r);
+			hts_pos_t clip_start = left_clipped ? 0 : r->seq_len() - r->right_clip_size;
+			hts_pos_t clip_end = left_clipped ? r->left_clip_size : r->seq_len();
+			for (int i = 0; i < r->seq_len(); i++) {
+				if (i+offset >= consensus_seq.length()) {
+					std::cerr << "WARNING: consensus_seq out of boundary." << std::endl;
+				}
+				if (consensus_seq[i + offset] != get_base(r->seq.data(), i)) {
+					mm++;
+					if (i >= clip_start && i < clip_end) mm_clip++;
+				}
+			}
+			if (mm <= std::ceil(config.max_seq_error * consensus_seq.length()) &&
+				mm_clip <= (clip_end-clip_start)/2) {
+				/* this is meant to fix a corner case where the clip is very short, and completely different from
+				 * the consensus_seq. However, the rest of the reads is the same as the consensus_seq, therefore the mismatches
+				 * accumulated in the clip are not enough to discard the read, despite the read not belonging to the cluster.
+				 * We are being very permissive (i.e. we allow up to 50% mismatches in the clip) because
+				 * 1. Illumina is known to accumulate sequencing errors at the 3' tail, which is the clipped portion in about
+				 * 50% of the cases
+				 * 2. Especially for short clips, if we used config.max_seq_error as for the rest of the consensus_seq, 2-3 mismatches
+				 * would already discard them
+				 */
 
-        	// the read should be much better when mapped to the consensus than when mapped to the reference
-        	int orig_score = compute_read_score(r, 1, -4, -6, -1);
-        	int new_score = (r->seq_len()-mm)*1 - mm*4;
+				// the read should be much better when mapped to the consensus than when mapped to the reference
+				int orig_score = compute_read_score(r, 1, -4, -6, -1);
+				int new_score = (r->seq_len()-mm)*1 - mm*4;
 
-        	if (new_score - orig_score >= config.min_score_diff) {
-				old_and_new_scores.push_back({orig_score, new_score});
-				accepted_reads.push_back(r);
-        	}
-        }
+				if (new_score - orig_score >= config.min_score_diff) {
+					old_and_new_scores.push_back({orig_score, new_score});
+					accepted_reads.push_back(r);
+				} else {
+					remaining_reads.push_back(r);
+				}
+			} else {
+				remaining_reads.push_back(r);
+			}
+		}
+
+		if (accepted_reads.size() <= 2) return consensuses;
+
+		hts_pos_t breakpoint = left_clipped ? INT32_MAX : 0; // the current HTS_POS_MAX does not compile on some compilers
+		hts_pos_t remap_boundary = left_clipped ? consensus_t::LOWER_BOUNDARY_NON_CALCULATED : consensus_t::UPPER_BOUNDARY_NON_CALCULATED;
+		int supp_clipped_reads = 0;
+		uint8_t max_mapq = 0;
+		std::string read_qnames;
+		int i = 0;
+		for (bam_redux_t* r : accepted_reads) {
+			breakpoint = left_clipped ? std::min(breakpoint, r->start-1) : std::max(breakpoint, r->end-1);
+
+			if (r->is_inter_chr() || r->is_rev() == r->is_mrev()) continue;
+			// Note that if the paired reads overlap, sometimes they are both clipped at the same position -
+			// i.e., they are on the same side of the deletion. We need to exclude them from remap boundary calculation
+			if (left_clipped && r->is_rev() && !r->mate_left_clipped()) {
+				remap_boundary = std::max(remap_boundary, r->mstart);
+			} else if (!left_clipped && !r->is_rev() && !r->mate_right_clipped()) {
+				remap_boundary = std::min(remap_boundary, r->start+r->isize);
+			}
+
+			if ((left_clipped && r->right_clip_size < config.min_clip_len)
+			 || (!left_clipped && r->left_clip_size < config.min_clip_len)) {
+				supp_clipped_reads++;
+				max_mapq = std::max(max_mapq, r->mapq);
+				read_qnames += r->qname + "," + std::to_string(r->is_rev()) + "," + std::to_string(old_and_new_scores[i].first) + "," + std::to_string(old_and_new_scores[i].second) + ",";
+			}
+			i++;
+		}
+		if (supp_clipped_reads < 3) return consensuses;
+
+		consensus_seq = build_full_consensus_seq(accepted_reads);
+
+		// we trim the beginning and the ending that are supported by less than 3 reads
+		// we need the third smallest start offset and third highest end offset in order to trim
+		// TODO: now that we break ties based on base qual, can we trust two reads?
+		std::vector<hts_pos_t> start_offsets, end_offsets;
+		for (bam_redux_t* r : accepted_reads) {
+			hts_pos_t start_offset = get_start_offset(accepted_reads[0], r);
+			start_offsets.push_back(start_offset);
+
+			hts_pos_t end_offset = start_offset + r->seq_len();
+			end_offsets.push_back(end_offset);
+		}
+		std::sort(start_offsets.begin(), start_offsets.end());
+		std::sort(end_offsets.begin(), end_offsets.end(), std::greater<hts_pos_t>());
+		hts_pos_t remove_from_start = start_offsets[1];
+		hts_pos_t remove_from_end = consensus_seq.length() - end_offsets[1];
+
+		// calculate the lenght of the clip in the consensus
+		int clip_len = 0, lowq_clip_portion;
+		if (left_clipped) {
+			clip_len = accepted_reads[0]->left_clip_size;
+			lowq_clip_portion = remove_from_start;
+		} else {
+			sort(accepted_reads.begin(), accepted_reads.end(), [](bam_redux_t* r1, bam_redux_t* r2) {
+				return r1->unclipped_end() > r2->unclipped_end();
+			});
+			clip_len = accepted_reads[0]->right_clip_size;
+			lowq_clip_portion = remove_from_end;
+		}
+
+		hts_pos_t start = INT32_MAX, end = 0;
+		for (bam_redux_t* r : accepted_reads) {
+			start = std::min(start, r->start);
+			end = std::max(start, r->end);
+		}
+
+		consensus_t* consensus = new consensus_t(left_clipped, contig_id, start, end, breakpoint, clip_len, lowq_clip_portion, consensus_seq,
+				supp_clipped_reads, max_mapq, remap_boundary);
+		consensuses.push_back(consensus);
+		log_mtx.lock();
+		flog << consensus->name() << " " << read_qnames << std::endl;
+		log_mtx.unlock();
+
+		clipped.swap(remaining_reads);
     }
 
-    if (accepted_reads.size() <= 2) return NULL;
-
-    hts_pos_t breakpoint = left_clipped ? INT32_MAX : 0; // the current HTS_POS_MAX does not compile on some compilers
-    hts_pos_t remap_boundary = left_clipped ? consensus_t::LOWER_BOUNDARY_NON_CALCULATED : consensus_t::UPPER_BOUNDARY_NON_CALCULATED;
-    int supp_clipped_reads = 0;
-    uint8_t max_mapq = 0;
-    std::string read_qnames;
-    int i = 0;
-    for (bam_redux_t* r : accepted_reads) {
-        breakpoint = left_clipped ? std::min(breakpoint, r->start-1) : std::max(breakpoint, r->end-1);
-
-        if (r->is_inter_chr() || r->is_rev() == r->is_mrev()) continue;
-        // Note that if the paired reads overlap, sometimes they are both clipped at the same position -
-        // i.e., they are on the same side of the deletion. We need to exclude them from remap boundary calculation
-        if (left_clipped && r->is_rev() && !r->mate_left_clipped()) {
-            remap_boundary = std::max(remap_boundary, r->mstart);
-        } else if (!left_clipped && !r->is_rev() && !r->mate_right_clipped()) {
-            remap_boundary = std::min(remap_boundary, r->start+r->isize);
-        }
-
-        if ((left_clipped && r->right_clip_size < config.min_clip_len)
-         || (!left_clipped && r->left_clip_size < config.min_clip_len)) {
-			supp_clipped_reads++;
-			max_mapq = std::max(max_mapq, r->mapq);
-            read_qnames += r->qname + "," + std::to_string(r->is_rev()) + "," + std::to_string(old_and_new_scores[i].first) + "," + std::to_string(old_and_new_scores[i].second) + ",";
-        }
-        i++;
-    }
-    if (supp_clipped_reads < 3) return NULL;
-
-    consensus_seq = build_full_consensus_seq(accepted_reads);
-
-    // we trim the beginning and the ending that are supported by less than 3 reads
-    // we need the third smallest start offset and third highest end offset in order to trim
-    // TODO: now that we break ties based on base qual, can we trust two reads?
-    std::vector<hts_pos_t> start_offsets, end_offsets;
-    for (bam_redux_t* r : accepted_reads) {
-		hts_pos_t start_offset = get_start_offset(accepted_reads[0], r);
-		start_offsets.push_back(start_offset);
-
-		hts_pos_t end_offset = start_offset + r->seq_len();
-		end_offsets.push_back(end_offset);
-	}
-    std::sort(start_offsets.begin(), start_offsets.end());
-    std::sort(end_offsets.begin(), end_offsets.end(), std::greater<hts_pos_t>());
-    hts_pos_t remove_from_start = start_offsets[1];
-    hts_pos_t remove_from_end = consensus_seq.length() - end_offsets[1];
-
-    // calculate the lenght of the clip in the consensus
-    int clip_len = 0, lowq_clip_portion;
-    if (left_clipped) {
-    	clip_len = accepted_reads[0]->left_clip_size;
-    	lowq_clip_portion = remove_from_start;
-    } else {
-		sort(accepted_reads.begin(), accepted_reads.end(), [](bam_redux_t* r1, bam_redux_t* r2) {
-			return r1->unclipped_end() > r2->unclipped_end();
-		});
-    	clip_len = accepted_reads[0]->right_clip_size;
-    	lowq_clip_portion = remove_from_end;
-    }
-
-    hts_pos_t start = INT32_MAX, end = 0;
-    for (bam_redux_t* r : accepted_reads) {
-    	start = std::min(start, r->start);
-    	end = std::max(start, r->end);
-    }
-
-    consensus_t* consensus = new consensus_t(left_clipped, contig_id, start, end, breakpoint, clip_len, lowq_clip_portion, consensus_seq,
-    		supp_clipped_reads, max_mapq, remap_boundary);
-    log_mtx.lock();
-    flog << consensus->name() << " " << read_qnames << std::endl;
-    log_mtx.unlock();
-    return consensus;
+	return consensuses;
 }
 
 #endif /* CONSENSUS_H_ */
