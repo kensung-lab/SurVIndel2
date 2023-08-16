@@ -17,6 +17,11 @@ cd SurVIndel2/
 cmake -DCMAKE_BUILD_TYPE=Release . && make
 ```
 
+If you are compiling on the same platform as where you will execute it, you can use -DNATIVE=ON to create faster executables
+```
+cmake -DCMAKE_BUILD_TYPE=Release -DNATIVE=ON . && make
+```
+
 Python is necessary to run SurVIndel2. Libraries NumPy (http://www.numpy.org/), PyFaidx (https://github.com/mdshw5/pyfaidx) and PySam (https://github.com/pysam-developers/pysam) are required. If 
 Python 2 is used, numpy 1.16.6, pyfaidx 0.5.9 and pysam 0.16.0.1 are the recommended (i.e., tested) versions. If Python 3 is used, then numpy 1.21.2, pyfaidx 0.5.9.1 and pysam 0.16.0.1 were 
 tested.
