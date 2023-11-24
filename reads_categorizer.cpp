@@ -73,14 +73,17 @@ void categorize(int id, std::string bam_fname, int contig_id, std::string contig
         while (curr_pos < rnd_positions.size() && read->core.pos > rnd_positions[curr_pos]) curr_pos++;
 
         int rlen = read->core.l_qseq;
+        hts_pos_t pair_startpos = read->core.pos + rlen/2, pair_endpos = get_mate_endpos(read) - rlen/2;
         if (curr_pos < rnd_positions.size() && is_samechr(read) && !is_samestr(read) && !bam_is_rev(read)
         && read->core.isize > 0 && read->core.isize <= config.max_is) {
-            if (read->core.pos+rlen/2 <= rnd_positions[curr_pos] && rnd_positions[curr_pos] <= read->core.pos+read->core.isize-rlen/2) {
-            	local_isize_counts[read->core.isize]++;
-            	local_isize_dist_by_pos[curr_pos].push_back(read->core.isize);
-                sum_is += read->core.isize;
-                n_is++;
-            }
+        	for (int i = curr_pos; i < rnd_positions.size() && rnd_positions[i] < pair_endpos; i++) {
+				if (pair_startpos <= rnd_positions[i] && rnd_positions[i] <= pair_endpos) {
+					local_isize_counts[read->core.isize]++;
+					local_isize_dist_by_pos[curr_pos].push_back(read->core.isize);
+					sum_is += read->core.isize;
+					n_is++;
+				}
+        	}
         }
 
         // clipped read
