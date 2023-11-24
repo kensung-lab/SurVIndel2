@@ -81,7 +81,7 @@ mkdir workdir-demo
 python survindel2.py demo/reads.bam workdir-demo/ demo/ref.fa
 ```
 
-The output will be in workdir-demo/out.pass.vcf.gz, and it will contain the following two CNVs:
+The demo should run in a few seconds. The output will be in workdir-demo/out.pass.vcf.gz, and it will contain the following two CNVs:
 ```
 $ bcftools view -H workdir-demo/out.pass.vcf.gz
 chr     30001   DEL_SR_0        C       <DEL>   .       PASS    END=50000;SVLEN=-19999;SVTYPE=DEL;MAX_SIZE=20051;REMAP_LB=29793;REMAP_UB=50269;MEDIAN_DEPTHS=31,0,0,31;CLUSTER_DEPTHS=36,27;DISC_PAIRS=46;DISC_PAIRS_SURROUNDING=0,0;CONC_PAIRS=0;CLIPPED_READS=13,18;MAX_MAPQ=60,60;FULL_JUNCTION_SCORE=134;SPLIT_JUNCTION_SCORE=132,134;SPLIT_JUNCTION_SCORE2=123,123;SPLIT_JUNCTION_SIZE=132,134;MM_RATE=0;SOURCE=2SR;EXTRA_INFO=132=,134=,132S134=,0_30000_R_74_13_13,0_49999_L_71_1_18,29869,50134,29869,50133;DISC_PAIRS_MAXMAPQ=60;DISC_PAIRS_HIGHMAPQ=46    GT:FT   1:PASS
