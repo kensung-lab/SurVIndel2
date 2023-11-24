@@ -73,3 +73,23 @@ python run_classifier.py WORKDIR/out.vcf WORKDIR/out.pass-ml.vcf.gz WORKDIR/stat
 ```
 
 This will generate a file WORKDIR/out.pass-ml.vcf.gz which contains the calls that the machine learning model predicted as real.
+
+## Demo
+
+```
+mkdir workdir-demo
+python survindel2.py demo/reads.bam workdir-demo/ demo/ref.fa
+```
+
+The output will be in workdir-demo/out.pass.vcf.gz, and it will contain the following two CNVs:
+```
+$ bcftools view -H workdir-demo/out.pass.vcf.gz
+chr     30001   DEL_SR_0        C       <DEL>   .       PASS    END=50000;SVLEN=-19999;SVTYPE=DEL;MAX_SIZE=20051;REMAP_LB=29793;REMAP_UB=50269;MEDIAN_DEPTHS=31,0,0,31;CLUSTER_DEPTHS=36,27;DISC_PAIRS=46;DISC_PAIRS_SURROUNDING=0,0;CONC_PAIRS=0;CLIPPED_READS=13,18;MAX_MAPQ=60,60;FULL_JUNCTION_SCORE=134;SPLIT_JUNCTION_SCORE=132,134;SPLIT_JUNCTION_SCORE2=123,123;SPLIT_JUNCTION_SIZE=132,134;MM_RATE=0;SOURCE=2SR;EXTRA_INFO=132=,134=,132S134=,0_30000_R_74_13_13,0_49999_L_71_1_18,29869,50134,29869,50133;DISC_PAIRS_MAXMAPQ=60;DISC_PAIRS_HIGHMAPQ=46    GT:FT   1:PASS
+chr     80000   DUP_SR_0        C       <DUP>   .       PASS    END=80101;SVLEN=101;SVTYPE=DUP;MEDIAN_DEPTHS=30,55,55,28;DISC_PAIRS=0;DISC_PAIRS_SURROUNDING=0,0;CLIPPED_READS=12,12;MAX_MAPQ=60,60;FULL_JUNCTION_SCORE=131;SPLIT_JUNCTION_SCORE=131,123;SPLIT_JUNCTION_SCORE2=123,107;SPLIT_JUNCTION_SIZE=131,123;SOURCE=2SR;EXTRA_INFO=131=,123=,131=123S,0_80100_R_74_5_12,0_79999_L_72_3_12,79970,80123,79970,80122     GT:FT   1:PASS
+```
+
+If you have built the machine learning model, you can verify it is working correctly with
+```
+python run_classifier.py workdir-demo/out.vcf.gz workdir-demo/out.pass-ml.vcf.gz workdir-demo/stats.txt ALL ml-model
+```
+The output will be in workdir-demo/out.pass-ml.vcf.gz and it should be identical to workdir-demo/out.pass.vcf.gz.
