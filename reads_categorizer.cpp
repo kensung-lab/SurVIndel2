@@ -14,7 +14,6 @@ std::string workdir, reference_fname;
 
 std::vector<std::pair<uint64_t, uint32_t> > partial_sums;
 std::vector<uint32_t> depths;
-std::vector<int> as_diff_dist;
 std::mutex mtx;
 
 std::mutex* mtx_contig;
@@ -64,7 +63,6 @@ void categorize(int id, std::string bam_fname, int contig_id, std::string contig
 
     int curr_pos = 0;
     std::vector<uint32_t> rnd_positions_depth(rnd_positions.size());
-    std::vector<int> as_diff_dist_contig;
     std::vector<uint32_t> local_isize_counts(config.max_is+1);
     std::vector<std::vector<uint32_t> > local_isize_dist_by_pos(rnd_positions.size());
     while (sam_itr_next(bam_file->file, iter, read) >= 0) {
@@ -119,24 +117,12 @@ void categorize(int id, std::string bam_fname, int contig_id, std::string contig
                 rnd_positions_depth[i]++;
             }
         }
-
-        // sample deviation compared to optimal score (which is read length)
-        // but only if the read is VERY confidently aligned (primary, MAPQ = 60 and not clipped)
-        // this is because we (as much as possible, and since actual SNPs/indels are *relatively* rare) want the deviation
-        // in score to be due to actual sequencing errors
-        if (read->core.qual == 60 && !is_left_clipped(read, 0) && !is_right_clipped(read, 0)) {
-            int64_t as = get_AS_tag(read);
-            as_diff_dist_contig.push_back(config.match_score*read->core.l_qseq - as);
-        }
     }
 
     mtx.lock();
     partial_sums.push_back({sum_is, n_is});
     for (uint32_t d : rnd_positions_depth) {
         if (d > 0) depths.push_back(d);
-    }
-    for (int as_diff : as_diff_dist_contig) {
-        as_diff_dist.push_back(as_diff);
     }
 
     for (int i = 0; i <= config.max_is; i++) {
@@ -246,20 +232,6 @@ int main(int argc, char* argv[]) {
     stats_out << "gt_depth_stddev " << gt_depth_stddev << std::endl;
     stats_out << "min_depth " << depths[depths.size()/100] << std::endl;
     stats_out << "max_depth " << depths[depths.size()-depths.size()/100] << std::endl;
-
-    // convert as_diff_dist into a frequency distribution
-    std::sort(as_diff_dist.begin(), as_diff_dist.end());
-    int max_as_diff = as_diff_dist[as_diff_dist.size()-1];
-    std::vector<uint64_t> as_diff_counts(max_as_diff+1);
-    for (int as_diff : as_diff_dist) {
-        as_diff_counts[as_diff]++;
-    }
-
-    std::ofstream as_diff_fout(workdir + "/as_diff_dist.txt");
-    for (int i = 0; i <= max_as_diff; i++) {
-        as_diff_fout << i << " " << double(as_diff_counts[i])/as_diff_dist.size() << "\n";
-    }
-    as_diff_fout.close();
 
     std::ofstream crossing_isizes_dist_fout(workdir + "/crossing_isizes.txt");
     for (int i = 0; i <= config.max_is; i++) {

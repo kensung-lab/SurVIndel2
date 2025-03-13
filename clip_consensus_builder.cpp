@@ -53,7 +53,6 @@ void release_bam_reader(open_samFile_t* reader) {
 std::unordered_map<std::string, std::vector<deletion_t*> > deletions_by_chr;
 std::unordered_map<std::string, std::vector<duplication_t*> > duplications_by_chr;
 std::unordered_map<std::string, std::vector<consensus_t*> > unpaired_consensuses_by_chr;
-std::vector<double> max_allowed_frac_normalized;
 std::mutex mtx, indel_out_mtx, up_consensus_mtx;
 
 
@@ -721,22 +720,7 @@ int main(int argc, char* argv[]) {
 		throw std::runtime_error("Failed to write the VCF header to " + out_vcf_fname + ".");
 	}
 
-    std::ifstream as_dist_fin(workdir + "/as_diff_dist.txt");
-    int as_diff; double freq;
-    std::unordered_map<int, double> as_diff_frequency_table;
-    while (as_dist_fin >> as_diff >> freq) {
-        as_diff_frequency_table[as_diff] = freq;
-    }
-    int max_as_diff = 0;
-    for (auto& e : as_diff_frequency_table) {
-        if (e.first > max_as_diff) max_as_diff = e.first;
-    }
-    max_allowed_frac_normalized.resize(max_as_diff+1);
-    for (int i = 0; i <= max_as_diff; i++) {
-        max_allowed_frac_normalized[i] = as_diff_frequency_table[i]/as_diff_frequency_table[0];
-    }
-
-    ctpl::thread_pool thread_pool3(config.threads);
+	ctpl::thread_pool thread_pool3(config.threads);
     for (size_t contig_id = 0; contig_id < contig_map.size(); contig_id++) {
         std::string contig_name = contig_map.get_name(contig_id);
         std::future<void> future = thread_pool3.push(size_and_depth_filtering, contig_name);
