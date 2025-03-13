@@ -42,7 +42,7 @@ This will build the model in the a folder called ml-model. The process may take 
 ## Running
 
 SurVIndel2 needs a BAM/CRAM file, a (possibly empty) working directory and reference genome in FASTA format.
-The BAM/CRAM file must be coordinate-sorted and indexed. Furthermore, the MC and the MQ tag must be present for all primary alignments, when applicable.
+The BAM/CRAM file must be coordinate-sorted and indexed. Furthermore, the MD, MC and the MQ tag must be present for all primary alignments, when applicable.
 
 Recent versions of BWA MEM (0.7.17) will add the MC tag. The easiest (but probably not the fastest) way to add the MQ tag is to use Picard FixMateInformation 
 (http://broadinstitute.github.io/picard/command-line-overview.html#FixMateInformation) 
