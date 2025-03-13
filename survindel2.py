@@ -4,12 +4,13 @@ from __future__ import print_function
 import argparse, os, pysam, pyfaidx, gc, sys
 import numpy as np
 from random_pos_generator import RandomPositionGenerator
+import timeit
 
 MAX_READS = 1000
 GEN_DIST_SIZE = 100000
 MAX_ACCEPTABLE_IS = 20000
 
-VERSION = "1.1.3"
+VERSION = "1.1.4"
 
 cmd_parser = argparse.ArgumentParser(description='SurVIndel2, a CNV caller.')
 cmd_parser.add_argument('bam_file', help='Input bam file.')
@@ -34,6 +35,19 @@ cmd_parser.add_argument('--min-diff-hsr', type=int, default=3, help='Minimum num
 cmd_parser.add_argument('--version', action='version', version="SurVIndel2 v%s" % VERSION, help='Print version number.')
 cmd_args = cmd_parser.parse_args()
 
+def exec(cmd, error_msg=None):
+    start_time = timeit.default_timer()
+    print("Executing:", cmd)
+    return_code = os.system(cmd)
+    if return_code != 0:
+        if error_msg:
+            print(error_msg)
+        else:
+            print("Error executing:", cmd)
+            print("Return code:", return_code)
+        exit(1)
+    elapsed = timeit.default_timer() - start_time
+    print(cmd, "was run in %.2f seconds" % elapsed)
 
 # Create config file in workdir
 
@@ -129,8 +143,7 @@ if not os.path.exists(workspace):
 gc.collect()
 
 read_categorizer_cmd = SURVINDEL_PATH + "/reads_categorizer %s %s %s" % (cmd_args.bam_file, cmd_args.workdir, cmd_args.reference)
-print("Executing:", read_categorizer_cmd)
-os.system(read_categorizer_cmd)
+exec(read_categorizer_cmd)
 
 if cmd_args.samplename:
     sample_name = cmd_args.samplename
@@ -138,19 +151,15 @@ else:
     sample_name = os.path.basename(cmd_args.bam_file).split(".")[0]
 
 clip_consensus_builder_cmd = SURVINDEL_PATH + "/clip_consensus_builder %s %s %s %s" % (cmd_args.bam_file, cmd_args.workdir, cmd_args.reference, sample_name)
-print("Executing:", clip_consensus_builder_cmd)
-os.system(clip_consensus_builder_cmd)
+exec(clip_consensus_builder_cmd)
 
 normalise_cmd = SURVINDEL_PATH + "/normalise %s/sr.vcf.gz %s/sr.norm.vcf.gz %s" % \
                 (cmd_args.workdir, cmd_args.workdir, cmd_args.reference)
-print("Executing:", normalise_cmd)
-os.system(normalise_cmd)
+exec(normalise_cmd)
 
 merge_identical_calls_cmd = SURVINDEL_PATH + "/merge_identical_calls %s/sr.norm.vcf.gz %s/sr.norm.dedup.vcf.gz" % \
                 (cmd_args.workdir, cmd_args.workdir)
-print("Executing:", merge_identical_calls_cmd)
-os.system(merge_identical_calls_cmd)
+exec(merge_identical_calls_cmd)
 
 dp_clusterer = SURVINDEL_PATH + "/dp_clusterer %s %s %s %s" % (cmd_args.bam_file, cmd_args.workdir, cmd_args.reference, sample_name)
-print("Executing:", dp_clusterer)
-os.system(dp_clusterer)
+exec(dp_clusterer)
