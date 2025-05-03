@@ -93,3 +93,9 @@ If you have built the machine learning model, you can verify it is working corre
 python run_classifier.py workdir-demo/out.vcf.gz workdir-demo/out.pass-ml.vcf.gz workdir-demo/stats.txt ALL ml-model
 ```
 The output will be in workdir-demo/out.pass-ml.vcf.gz and it should be identical to workdir-demo/out.pass.vcf.gz.
+
+## Citation
+
+Rajaby, R., Sung, WK. SurVIndel2: improving copy number variant calling from next-generation sequencing using hidden split reads. Nat Commun 15, 10473 (2024). https://doi.org/10.1038/s41467-024-53087-7
+
+
