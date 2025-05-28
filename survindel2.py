@@ -35,7 +35,7 @@ cmd_parser.add_argument('--min-diff-hsr', type=int, default=3, help='Minimum num
 cmd_parser.add_argument('--version', action='version', version="SurVIndel2 v%s" % VERSION, help='Print version number.')
 cmd_args = cmd_parser.parse_args()
 
-def exec(cmd, error_msg=None):
+def run_cmd(cmd, error_msg=None):
     start_time = timeit.default_timer()
     print("Executing:", cmd)
     return_code = os.system(cmd)
@@ -143,7 +143,7 @@ if not os.path.exists(workspace):
 gc.collect()
 
 read_categorizer_cmd = SURVINDEL_PATH + "/reads_categorizer %s %s %s" % (cmd_args.bam_file, cmd_args.workdir, cmd_args.reference)
-exec(read_categorizer_cmd)
+run_cmd(read_categorizer_cmd)
 
 if cmd_args.samplename:
     sample_name = cmd_args.samplename
@@ -151,15 +151,15 @@ else:
     sample_name = os.path.basename(cmd_args.bam_file).split(".")[0]
 
 clip_consensus_builder_cmd = SURVINDEL_PATH + "/clip_consensus_builder %s %s %s %s" % (cmd_args.bam_file, cmd_args.workdir, cmd_args.reference, sample_name)
-exec(clip_consensus_builder_cmd)
+run_cmd(clip_consensus_builder_cmd)
 
 normalise_cmd = SURVINDEL_PATH + "/normalise %s/sr.vcf.gz %s/sr.norm.vcf.gz %s" % \
                 (cmd_args.workdir, cmd_args.workdir, cmd_args.reference)
-exec(normalise_cmd)
+run_cmd(normalise_cmd)
 
 merge_identical_calls_cmd = SURVINDEL_PATH + "/merge_identical_calls %s/sr.norm.vcf.gz %s/sr.norm.dedup.vcf.gz" % \
                 (cmd_args.workdir, cmd_args.workdir)
-exec(merge_identical_calls_cmd)
+run_cmd(merge_identical_calls_cmd)
 
 dp_clusterer = SURVINDEL_PATH + "/dp_clusterer %s %s %s %s" % (cmd_args.bam_file, cmd_args.workdir, cmd_args.reference, sample_name)
-exec(dp_clusterer)
+run_cmd(dp_clusterer)
