@@ -2,6 +2,13 @@
 
 An deletion and tandem duplication caller for Illumina paired-end WGS data.
 
+Note: we released SurVeyor, a structural variants caller that calls deletions, duplications, insertions and inversions. 
+It performs better than SurVIndel2, and it produces genotyped calls. We recommend using it over SurVIndel2.
+You can find it at
+
+https://github.com/Mesh89/SurVeyor
+
+
 ## Installation
 
 In order to compile the code, the following are required:
